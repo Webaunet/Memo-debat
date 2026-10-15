@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Mémo Débat</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1f2937">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1f2937;--mu:#6b7280;--bd:#e5e7eb;--ac:#1f2937}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--tx);padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:760px;margin:0 auto;padding:14px}
+h1{font-size:22px;margin:6px 0 12px}
+button,input,select,textarea{font:inherit;color:inherit}
+input,select,textarea{width:100%;padding:10px;border:1px solid var(--bd);border-radius:10px;background:#fff;margin:4px 0}
+textarea{min-height:80px;resize:vertical}
+button{border:0;background:var(--ac);color:#fff;padding:10px 14px;border-radius:10px;cursor:pointer}
+button.s{background:#fff;color:var(--tx);border:1px solid var(--bd)}
+button.l{background:none;color:var(--mu);padding:4px 8px;font-size:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:12px;margin:8px 0}
+.topic{display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+.topic b{font-size:17px}
+.mu{color:var(--mu);font-size:14px}
+.chip{padding:6px 12px;border-radius:99px;border:1px solid var(--bd);background:#fff;color:var(--tx);font-size:14px}
+.chip.on{background:var(--ac);color:#fff}
+.badge{display:inline-block;font-size:12px;font-weight:600;color:#fff;border-radius:6px;padding:2px 8px;margin-bottom:6px}
+.txt{white-space:pre-wrap;word-break:break-word}
+.item img{max-width:100%;border-radius:10px;margin-top:8px}
+.item iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:10px;margin-top:8px}
+a{color:#2563eb;word-break:break-all}
+.debate .txt{font-size:19px}
+.debate .hide-d{display:none}
+@media print{.noprint,.item .l,.hide-p{display:none!important}body{background:#fff}.card{break-inside:avoid;border-color:#999}.item iframe{display:none}}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+const TYPES=[["arg","Argument","#2563eb"],["ex","Exemple","#059669"],["chi","Chiffre","#d97706"],["con","Contre-argument","#dc2626"],["src","Source","#7c3aed"],["note","Note","#6b7280"]];
+let db;try{db=JSON.parse(localStorage.getItem("memo")||"")||{topics:[]}}catch(e){db={topics:[]}}
+const save=()=>localStorage.setItem("memo",JSON.stringify(db));
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const $=s=>document.querySelector(s);
+let filter="all",debate=false;
+
+function media(u){
+  if(!u)return"";
+  const y=u.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
+  if(y)return`<iframe src="https://www.youtube.com/embed/${y[1]}" allowfullscreen loading="lazy"></iframe><div class="mu"><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a></div>`;
+  if(/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u))return`<img src="${esc(u)}" alt="" loading="lazy">`;
+  return`<div><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a></div>`;
+}
+function itemHTML(it,tid,showTopic){
+  const t=TYPES.find(x=>x[0]===it.type)||TYPES[5];
+  return`<div class="card item"><span class="badge" style="background:${t[2]}">${t[1]}</span>${showTopic?` <span class="mu">· ${esc(showTopic)}</span>`:""}
+<div class="txt">${esc(it.text)}</div>${it.src?`<div class="mu">Source : ${esc(it.src)}</div>`:""}${media(it.url)}
+<div class="hide-d"><button class="l" data-a="edit" data-t="${tid}" data-i="${it.id}">Modifier</button><button class="l" data-a="del" data-t="${tid}" data-i="${it.id}">Supprimer</button></div></div>`;
+}
+
+function home(){
+  $("#app").innerHTML=`<h1>📚 Mémo Débat</h1>
+<input id="q" type="search" placeholder="Rechercher dans tous les sujets…">
+<div id="res"></div>
+<div id="list">${db.topics.map(t=>`<div class="card topic" data-a="open" data-t="${t.id}"><b>${esc(t.name)}</b><span class="mu">${t.items.length}</span></div>`).join("")||'<p class="mu">Aucun sujet. Crée le premier ci-dessous.</p>'}</div>
+<div class="row noprint"><input id="nt" placeholder="Nouveau sujet (ex. IA, écologie…)" style="flex:1"><button data-a="addTopic">Ajouter</button></div>
+<div class="row noprint"><button class="s" data-a="export">Exporter (sauvegarde)</button><button class="s" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div>`;
+  $("#q").oninput=e=>{
+    const v=e.target.value.trim().toLowerCase();
+    if(!v){$("#res").innerHTML="";$("#list").style.display="";return}
+    $("#list").style.display="none";
+    const r=[];db.topics.forEach(t=>t.items.forEach(i=>{if((i.text+" "+(i.src||"")+" "+(i.url||"")).toLowerCase().includes(v))r.push(itemHTML(i,t.id,t.name))}));
+    $("#res").innerHTML=r.join("")||'<p class="mu">Rien trouvé.</p>';
+  };
+  $("#file").onchange=e=>{
+    const f=e.target.files[0];if(!f)return;
+    f.text().then(s=>{try{const d=JSON.parse(s);if(!Array.isArray(d.topics))throw 0;db=d;save();home()}catch(x){alert("Fichier invalide")}});
+  };
+}
+
+function topic(id){
+  const t=db.topics.find(x=>x.id===id);if(!t){location.hash="";return}
+  const items=t.items.filter(i=>filter==="all"||i.type===filter);
+  $("#app").innerHTML=`<div class="${debate?"debate":""}">
+<div class="row noprint"><button class="s" data-a="back">←</button><button class="${debate?"":"s"}" data-a="debate">${debate?"Quitter le mode débat":"Mode débat"}</button><button class="s hide-d" data-a="print">Imprimer / PDF</button></div>
+<h1>${esc(t.name)} <button class="l hide-d hide-p" data-a="rename" data-t="${id}">renommer</button></h1>
+<div class="row noprint"><button class="chip ${filter==="all"?"on":""}" data-a="filter" data-f="all">Tous</button>${TYPES.map(x=>`<button class="chip ${filter===x[0]?"on":""}" data-a="filter" data-f="${x[0]}">${x[1]}</button>`).join("")}</div>
+${items.map(i=>itemHTML(i,id)).join("")||'<p class="mu">Rien ici pour le moment.</p>'}
+<div class="card hide-d noprint"><b>Ajouter</b> <button class="s" data-a="photo">📷 Photo surlignée</button><div id="st" class="mu"></div>
+<select id="ty">${TYPES.map(x=>`<option value="${x[0]}">${x[1]}</option>`).join("")}</select>
+<textarea id="tx" placeholder="Texte (1 idée = 1 fiche)"></textarea>
+<input id="su" placeholder="Source (titre, auteur, épisode…)">
+<input id="ur" type="url" placeholder="Lien : page, vidéo YouTube, image…">
+<div class="row"><button data-a="addItem" data-t="${id}">Enregistrer</button></div></div>
+<div class="row hide-d noprint"><button class="l" data-a="delTopic" data-t="${id}">Supprimer ce sujet</button></div></div>`;
+}
+
+function route(){const m=location.hash.match(/^#\/t\/(.+)$/);m?topic(m[1]):home()}
+addEventListener("hashchange",()=>{filter="all";debate=false;route()});
+
+document.addEventListener("click",e=>{
+  const b=e.target.closest("[data-a]");if(!b)return;
+  const a=b.dataset.a,tid=b.dataset.t,T=()=>db.topics.find(x=>x.id===tid);
+  if(a==="open")location.hash="#/t/"+tid;
+  else if(a==="back")location.hash="";
+  else if(a==="addTopic"){const n=$("#nt").value.trim();if(n){db.topics.push({id:uid(),name:n,items:[]});save();home()}}
+  else if(a==="filter"){filter=b.dataset.f;topic(location.hash.slice(4))}
+  else if(a==="debate"){debate=!debate;topic(location.hash.slice(4))}
+  else if(a==="print")print();
+  else if(a==="rename"){const n=prompt("Nouveau nom",T().name);if(n&&n.trim()){T().name=n.trim();save();topic(tid)}}
+  else if(a==="delTopic"){if(confirm("Supprimer ce sujet et toutes ses fiches ?")){db.topics=db.topics.filter(x=>x.id!==tid);save();location.hash=""}}
+  else if(a==="addItem"){
+    const text=$("#tx").value.trim(),url=$("#ur").value.trim();
+    if(!text&&!url)return;
+    T().items.unshift({id:uid(),type:$("#ty").value,text,src:$("#su").value.trim(),url});save();topic(tid);
+  }
+  else if(a==="edit"){const it=T().items.find(x=>x.id===b.dataset.i);const n=prompt("Modifier le texte",it.text);if(n!==null){it.text=n;save();topic(tid)}}
+  else if(a==="del"){if(confirm("Supprimer cette fiche ?")){const t=T();t.items=t.items.filter(x=>x.id!==b.dataset.i);save();topic(tid)}}
+  else if(a==="export"){
+    const l=document.createElement("a");
+    l.href=URL.createObjectURL(new Blob([JSON.stringify(db,null,1)],{type:"application/json"}));
+    l.download="memo-debat-"+new Date().toISOString().slice(0,10)+".json";l.click();
+  }
+  else if(a==="import")$("#file").click();
+  else if(a==="photo")pickPhoto();
+});
+/* ===== Photo d'une page surlignée -> texte (OCR dans le navigateur) ===== */
+function pickPhoto(){
+  const i=document.createElement("input");i.type="file";i.accept="image/*";
+  i.onchange=()=>{if(i.files[0])scanPhoto(i.files[0])};i.click();
+}
+function otsu(h,n){let s=0;for(let t=0;t<256;t++)s+=t*h[t];let sb=0,wb=0,mx=0,th=128;
+  for(let t=0;t<256;t++){wb+=h[t];if(!wb)continue;const wf=n-wb;if(!wf)break;sb+=t*h[t];
+    const mb=sb/wb,mf=(s-sb)/wf,v=wb*wf*(mb-mf)*(mb-mf);if(v>mx){mx=v;th=t}}return th}
+async function scanPhoto(file){
+  const st=$("#st"),say=m=>{if(st)st.textContent=m};
+  try{
+    say("Analyse de la photo…");
+    const bmp=await createImageBitmap(file);
+    const sc=Math.min(1,2000/Math.max(bmp.width,bmp.height));
+    const W=Math.round(bmp.width*sc),H=Math.round(bmp.height*sc);
+    const cv=document.createElement("canvas");cv.width=W;cv.height=H;
+    const cx=cv.getContext("2d",{willReadFrequently:true});cx.drawImage(bmp,0,0,W,H);
+    const px=cx.getImageData(0,0,W,H).data;
+    // 1. repérer les zones surlignées (couleur vive et saturée)
+    const G=8,gw=Math.ceil(W/G),gh=Math.ceil(H/G),cnt=new Uint16Array(gw*gh);
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+      const i=(y*W+x)*4,r=px[i],g=px[i+1],b=px[i+2],mx=Math.max(r,g,b),mn=Math.min(r,g,b);
+      if(mx>140&&(mx-mn)/mx>0.35)cnt[((y/G)|0)*gw+((x/G)|0)]++;
+    }
+    const m=new Uint8Array(gw*gh);for(let k=0;k<m.length;k++)m[k]=cnt[k]>G*G*0.35?1:0;
+    const d=new Uint8Array(gw*gh);
+    for(let y=0;y<gh;y++)for(let x=0;x<gw;x++)if(m[y*gw+x])
+      for(let dy=-1;dy<=1;dy++)for(let dx=-3;dx<=3;dx++){const yy=y+dy,xx=x+dx;if(yy>=0&&yy<gh&&xx>=0&&xx<gw)d[yy*gw+xx]=1}
+    // 2. regrouper en passages
+    const seen=new Uint8Array(gw*gh),boxes=[];
+    for(let s=0;s<d.length;s++){
+      if(!d[s]||seen[s])continue;
+      const q=[s];seen[s]=1;let x0=1e9,y0=1e9,x1=-1,y1=-1,n=0;
+      while(q.length){const c=q.pop(),cy=(c/gw)|0,cxx=c%gw;
+        if(m[c]){n++;x0=Math.min(x0,cxx);x1=Math.max(x1,cxx);y0=Math.min(y0,cy);y1=Math.max(y1,cy)}
+        for(const [ox,oy] of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=cxx+ox,ny=cy+oy;
+          if(nx>=0&&nx<gw&&ny>=0&&ny<gh&&d[ny*gw+nx]&&!seen[ny*gw+nx]){seen[ny*gw+nx]=1;q.push(ny*gw+nx)}}}
+      if(n>=6){const p=6;boxes.push([Math.max(0,x0*G-p),Math.max(0,y0*G-p),Math.min(W,(x1+1)*G+p),Math.min(H,(y1+1)*G+p)])}
+    }
+    boxes.sort((a,b)=>a[1]-b[1]||a[0]-b[0]);
+    const whole=!boxes.length;if(whole)boxes.push([0,0,W,H]);
+    // 3. OCR
+    if(!window.Tesseract){say("Chargement du lecteur de texte (1re fois, ~10 Mo)…");
+      await new Promise((ok,ko)=>{const s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";s.onload=ok;s.onerror=()=>ko(new Error("connexion requise"));document.head.append(s)})}
+    const w=await Tesseract.createWorker("fra");
+    await w.setParameters({tessedit_pageseg_mode:"6"});
+    const out=[];
+    for(let k=0;k<boxes.length;k++){
+      say("Lecture du passage "+(k+1)+"/"+boxes.length+"…");
+      const [x0,y0,x1,y1]=boxes[k],cw=x1-x0,ch=y1-y0;
+      const c=document.createElement("canvas");c.width=cw;c.height=ch;
+      const cc=c.getContext("2d");const im=cx.getImageData(x0,y0,cw,ch),a=im.data,gray=new Uint8Array(cw*ch),h=new Array(256).fill(0);
+      for(let i=0;i<gray.length;i++){const v=Math.max(a[i*4],a[i*4+1],a[i*4+2]);gray[i]=v;h[v]++}
+      const th=otsu(h,gray.length);
+      for(let i=0;i<gray.length;i++){const v=gray[i]>th?255:0;a[i*4]=a[i*4+1]=a[i*4+2]=v;a[i*4+3]=255}
+      cc.putImageData(im,0,0);
+      const r=await w.recognize(c);
+      out.push(r.data.text.replace(/-\n/g,"").replace(/\s*\n\s*/g," ").trim());
+    }
+    await w.terminate();
+    $("#tx").value=out.filter(Boolean).join("\n\n");
+    say(whole?"Aucun surlignage détecté : page entière lue. Garde seulement le passage voulu.":boxes.length+" passage(s) lu(s). Vérifie et corrige le texte, ajoute la source, puis Enregistrer.");
+    $("#tx").scrollIntoView({behavior:"smooth",block:"center"});
+  }catch(e){say("Échec : "+e.message)}
+}
+route();
+if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js");
+</script>
+</body>
+</html>
