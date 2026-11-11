@@ -403,6 +403,7 @@ async function scanPhoto(file,tid){
   finally{scanBusy=false}
 }
 // écran de validation : photo avec lignes repérées (toucher pour ajouter/retirer) + passages modifiables
+const srcOpts=sel=>`<option value="">(aucune)</option>${db.sources.map(s=>`<option value="${s.id}"${s.id===sel?" selected":""}>${esc(s.title)}</option>`).join("")}<option value="__new">+ Nouvelle source…</option>`;
 function openReview(R,tid){
   let ps=buildPassages(R.cols);
   const lh=Math.max(...R.cols.map(C=>C.lh)),all=R.cols.flatMap(C=>C.lines);
@@ -415,9 +416,11 @@ function openReview(R,tid){
   d.innerHTML=`<div class="in"><div class="bar"><button class="btn gh" data-r="close">Annuler</button></div>
 <h1 class="ser" id="rvH"></h1><p class="mu">Touche une ligne sur la photo pour l'ajouter ou la retirer, puis corrige le texte si besoin.</p>
 <canvas id="rvC"></canvas>
+<label class="lbl" for="rvD">Classer dans</label><select id="rvD"><option value="__auto"${tid==="auto"?" selected":""}>Automatique (déduit du contenu)</option>${allSubs().map(x=>`<option value="${x.sub.id}"${x.sub.id===tid?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("")}</select><p class="mu" id="rvDH" style="margin:4px 0 8px;min-height:18px"></p>
 <div class="g3"><div><label class="lbl">Type</label><select id="rvT">${TYPES.map(x=>`<option value="${x[0]}"${x[0]===lastT?" selected":""}>${x[1]}</option>`).join("")}</select></div>
-<div><label class="lbl">Source</label><select id="rvS"><option value="">(aucune)</option>${db.sources.map(s=>`<option value="${s.id}"${s.id===lastS?" selected":""}>${esc(s.title)}</option>`).join("")}<option value="__new">+ Nouvelle source…</option></select></div>
+<div><label class="lbl">Source</label><select id="rvS">${srcOpts(lastS)}</select></div>
 <div><label class="lbl">Page</label><input id="rvPg" placeholder="n°" inputmode="numeric" value="${esc(R.page)}"></div></div>
+<button class="btn" data-r="book" style="margin-top:8px;min-height:44px">${ic("cam",18)}Livre : photographier ou chercher</button>
 <input id="rvSN" placeholder="Titre de la nouvelle source" hidden>
 <div id="rvP"></div>
 <div class="stick"><button class="btn pri" data-r="ok" id="rvOk">Créer</button></div></div>`;
@@ -435,7 +438,12 @@ function openReview(R,tid){
       for(const m of C.marks)g.strokeRect((m.x-vx0)*k-6,(m.y0-vy0)*k,12,(m.y1-m.y0)*k);
     }
   };
-  const count=()=>{const nb=d.querySelectorAll("#rvP input:checked").length,b=d.querySelector("#rvOk");b.textContent=nb?"Créer "+nb+" fiche"+(nb>1?"s":""):"Créer";b.disabled=!nb;d.querySelector("#rvH").textContent=ps.length+" passage"+(ps.length>1?"s":"")+" repéré"+(ps.length>1?"s":"")};
+  const planNow=()=>{
+    const texts=[...d.querySelectorAll("#rvP input:checked")].map(i=>d.querySelector(`textarea[data-i="${i.dataset.i}"]`).value),sv=d.querySelector("#rvS").value;
+    return planPlace({text:texts.join(" "),src:sv==="__new"?"":sv});
+  };
+  const hint=()=>{d.querySelector("#rvDH").textContent=d.querySelector("#rvD").value==="__auto"?"Sera classé dans : "+planNow().label:""};
+  const count=()=>{hint();const nb=d.querySelectorAll("#rvP input:checked").length,b=d.querySelector("#rvOk");b.textContent=nb?"Créer "+nb+" fiche"+(nb>1?"s":""):"Créer";b.disabled=!nb;d.querySelector("#rvH").textContent=ps.length+" passage"+(ps.length>1?"s":"")+" repéré"+(ps.length>1?"s":"")};
   const list=()=>{
     d.querySelector("#rvP").innerHTML=ps.length?ps.map((p,i)=>`<div class="card pas"><label class="chk"><input type="checkbox" data-i="${i}" checked><b>Passage ${i+1}</b></label><textarea data-i="${i}" rows="4">${esc(p.text)}</textarea></div>`).join(""):'<p class="mu">Aucune marque repérée : touche les lignes à garder sur la photo.</p>';
     count();
@@ -450,18 +458,39 @@ function openReview(R,tid){
   };
   d.onchange=e=>{
     if(e.target.type==="checkbox")count();
-    if(e.target.id==="rvS"){const n=d.querySelector("#rvSN");n.hidden=e.target.value!=="__new";if(!n.hidden)n.focus()}
+    if(e.target.id==="rvS"){const n=d.querySelector("#rvSN");n.hidden=e.target.value!=="__new";if(!n.hidden)n.focus();hint()}
+    if(e.target.id==="rvD")hint();
   };
   d.onclick=e=>{
     const b=e.target.closest("[data-r]");if(!b)return;
     if(b.dataset.r==="close"){d.remove();document.body.style.overflow="";return}
-    const f=findSub(tid);if(!f)return;
+    if(b.dataset.r==="book"){pickBook(id=>{d.querySelector("#rvS").innerHTML=srcOpts(id);d.querySelector("#rvSN").hidden=true;hint()});return}
     const t=d.querySelector("#rvT").value,pg=d.querySelector("#rvPg").value.trim();
     let sid=d.querySelector("#rvS").value;
     if(sid==="__new"){const nt=d.querySelector("#rvSN").value.trim();sid=nt?newSource({title:nt,kind:"Livre"}):""}
     const texts=[...d.querySelectorAll("#rvP input:checked")].map(i=>d.querySelector(`textarea[data-i="${i.dataset.i}"]`).value.trim()).filter(Boolean);
-    texts.reverse().forEach(tx=>f.sub.items.unshift(newItem({type:t,text:tx,src:sid,page:pg})));
+    let dest=d.querySelector("#rvD").value,label="";
+    if(dest==="__auto"){const pl=planPlace({text:texts.join(" "),src:sid});dest=commitPlace(pl);label=pl.label.replace(" (nouveau)","")}
+    const f=findSub(dest);if(!f)return;
+    if(!label)label=f.theme.name+" › "+f.sub.name;
+    texts.slice().reverse().forEach(tx=>f.sub.items.unshift(newItem({type:t,text:tx,src:sid,page:pg})));
     lsSet("memoLastType",t);lsSet("memoLastSrcId",sid);
-    save();d.remove();document.body.style.overflow="";go("#/t/"+tid);
+    save();d.remove();document.body.style.overflow="";go("#/t/"+dest);
+    afterReview(texts.length,label);
   };
+}
+
+// après la création des fiches : proposer la page suivante (annoter un livre page après page)
+function afterReview(n,label){
+  closeSheet();
+  const d=document.createElement("div");d.className="ov";d.id="sh";
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Fiches créées"><div class="h"></div><h2 class="ct" style="margin:0">${n} fiche${n>1?"s":""} créée${n>1?"s":""}</h2><p class="mu" style="margin:0">Classée${n>1?"s":""} dans : ${esc(label)}</p>
+<button class="opt pri" data-o="next"><span class="ico">${ic("cam",24)}</span><span><b>Page suivante</b><small>Même livre, classement automatique</small></span></button>
+<button class="btn" data-o="done">Terminer</button></div>`;
+  d.onclick=e=>{
+    if(e.target===d){closeSheet();return}
+    const b=e.target.closest("[data-o]");if(!b)return;
+    closeSheet();if(b.dataset.o==="next")pickPhoto("auto");
+  };
+  document.body.append(d);
 }

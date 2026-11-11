@@ -414,20 +414,20 @@ function shareStart(){
   openShare({text:txt,url,newSrc:url?{title:t||host||"Lien partagé",kind:yt?"Vidéo":"Site",url}:null});
 }
 function openShare(dr){
-  const subs=allSubs();if(!subs.length){toast("Crée d’abord un thème et un sujet, puis repartage.",6000);return}
+  const subs=allSubs();
   closeSheet();
-  const cur=lsGet("memoLastSub")&&findSub(lsGet("memoLastSub"))?lsGet("memoLastSub"):subs[0].sub.id;
+  const cur="auto";
   const d=document.createElement("div");d.className="ov";d.id="sh";
   d.innerHTML=`<div class="sheet" role="dialog" aria-label="Ajouter le contenu partagé"><div class="h"></div>
 <h2 class="ct" style="margin:0 0 4px">Ajouter à Mémo Débat</h2>
 <p class="mu" style="margin:0;word-break:break-all">${esc((dr.newSrc&&dr.newSrc.title)||dr.url||dr.text).slice(0,160)}</p>
-<label class="lbl" for="shT">Dans le sujet</label><select id="shT">${subs.map(x=>`<option value="${x.sub.id}"${x.sub.id===cur?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("")}</select>
+<label class="lbl" for="shT">Classer dans</label><select id="shT"><option value="auto" selected>Automatique (déduit du contenu)</option>${subs.map(x=>`<option value="${x.sub.id}"${x.sub.id===cur?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("")}</select>
 <div class="row" style="margin-top:12px"><button class="btn pri sp" data-o="go">Continuer</button><button class="btn" data-o="no">Annuler</button></div></div>`;
   d.onclick=e=>{
     if(e.target===d){closeSheet();return}
     const b=e.target.closest("[data-o]");if(!b)return;
     const t=$("#shT").value;closeSheet();
-    if(b.dataset.o==="go"){lsSet("memoLastSub",t);draft=dr;go("#/e/"+t+"/new")}
+    if(b.dataset.o==="go"){if(t!=="auto")lsSet("memoLastSub",t);draft=dr;go("#/e/"+t+"/new")}
   };
   document.body.append(d);
 }
@@ -610,23 +610,64 @@ ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<button class="c
 </div></div>
 <div class="bb"><div><button class="btn hl" data-a="star2" data-s="${sid}" data-i="${iid}">${ic("star",20)}${it.star?"Dans l’antisèche":"Ajouter à l’antisèche"}</button><button class="btn" style="flex:0 0 140px" data-a="share" data-s="${sid}" data-i="${iid}">${ic("share",20)}Partager</button></div></div>`;
 }
+/* ===== Classement automatique (sans IA : mots-clés, même livre, thème du livre) ===== */
+const STOPW=new Set("avec dans pour par sur sous cette cela celui celle ceux elles ils nous vous sont etre avoir fait faire plus moins tres aussi comme mais donc leur leurs entre vers chez sans depuis alors ainsi apres avant dont quand tout tous toute toutes autre autres meme ete etait ont the and that this with from have for are was were their which about into more than temps fois chose choses monde partie facon jour jours annee annees gens personne personnes lorsque lors selon encore toujours jamais devez doivent peuvent peut bien bon bonne quelque quelques plusieurs chaque notre votre vos nos ces ses".split(" "));
+const nm=x=>String(x||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
+const toks=x=>(nm(x).match(/[a-z0-9]{4,}/g)||[]).filter(w=>!STOPW.has(w)).map(w=>w.slice(0,6));
+function suggestPlace(info){
+  const subs=allSubs();if(!subs.length)return null;
+  const N=subs.length,df=new Map(),idx=subs.map(x=>{
+    const bag=new Map(),srcs=new Map(),add=(a,w)=>a.forEach(t=>bag.set(t,(bag.get(t)||0)+w));
+    add(toks(x.sub.name),5);add(toks(x.theme.name),2);
+    for(const i of x.sub.items){
+      add(toks((i.text||"")+" "+(i.cite||"")),1);add((i.tags||[]).flatMap(toks),3);
+      if(i.src){srcs.set(i.src,(srcs.get(i.src)||0)+1);const r=srcOf(i);if(r)add(toks(r.title),1)}
+    }
+    for(const t of bag.keys())df.set(t,(df.get(t)||0)+1);
+    return{x,bag,srcs};
+  });
+  const q=new Map(),add=(a,w)=>a.forEach(t=>q.set(t,Math.max(q.get(t)||0,w)));
+  add(toks((info.text||"")+" "+(info.cite||"")),1);add((info.tags||[]).flatMap(toks),3);
+  const r=info.src&&db.sources.find(x=>x.id===info.src);if(r)add(toks(r.title),1.5)
+  let best=null;
+  for(const e of idx){
+    let sc=0;for(const[t,w]of q){const b=e.bag.get(t);if(b)sc+=w*Math.max(1,Math.log(1+N/(df.get(t)||1)))*Math.log(1+b)}
+    const n=info.src&&e.srcs.get(info.src);if(n)sc+=6+Math.min(n,5)*.5;
+    if(!best||sc>best.sc)best={e,sc};
+  }
+  return best&&best.sc>=1.7?{sub:best.e.x.sub,theme:best.e.x.theme}:null;
+}
+function planPlace(info){
+  const g=suggestPlace(info);if(g)return{sid:g.sub.id,label:g.theme.name+" › "+g.sub.name};
+  const r=info.src&&db.sources.find(x=>x.id===info.src),theme=(r&&r.cat)||"À classer",sub=r?r.title:"En vrac";
+  const t=db.themes.find(x=>nm(x.name)===nm(theme)),e=t&&t.subs.find(x=>nm(x.name)===nm(sub));
+  return e?{sid:e.id,label:theme+" › "+sub}:{theme,sub,label:theme+" › "+sub+" (nouveau)"};
+}
+function commitPlace(p){
+  if(p.sid)return p.sid;
+  let t=db.themes.find(x=>nm(x.name)===nm(p.theme));if(!t){t={id:uid(),name:p.theme,u:now(),subs:[]};db.themes.push(t)}
+  let u=t.subs.find(x=>nm(x.name)===nm(p.sub));if(!u){u={id:uid(),name:p.sub,u:now(),items:[]};t.subs.push(u)}
+  return u.id;
+}
 let draft=null;
 function srcOptions(sel){return`<option value="">(aucune)</option>${db.sources.slice().sort((a,b)=>a.title.localeCompare(b.title)).map(s=>`<option value="${s.id}"${s.id===sel?" selected":""}>${esc(s.title)}</option>`).join("")}<option value="__new">+ Nouvelle source…</option>`}
 function editPage(sid,iid){
   const isNew=iid==="new";let f=findSub(sid),it=isNew?null:f&&f.sub.items.find(x=>x.id===iid);
   if(!isNew&&!it)return go("#/");
   const d=isNew?(draft||{}):it;draft=null;fImgs=[...(d.imgs||[])];
-  const subSel=allSubs().map(x=>`<option value="${x.sub.id}"${x.sub.id===sid?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("");
+  const auto=isNew&&sid==="auto";
+  const subSel=(isNew?`<option value="__auto"${auto?" selected":""}>Automatique (déduit du contenu)</option>`:"")+allSubs().map(x=>`<option value="${x.sub.id}"${x.sub.id===sid?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("");
   $("#app").innerHTML=`<div class="wrap">
-<div class="bar"><a href="${isNew?"#/t/"+sid:"#/f/"+sid+"/"+iid}" class="back">${ic("back")}Annuler</a></div>
+<div class="bar"><a href="${isNew?(auto?"#/":"#/t/"+sid):"#/f/"+sid+"/"+iid}" class="back">${ic("back")}Annuler</a></div>
 <h1 class="ser">${isNew?"Nouvelle fiche":"Modifier la fiche"}</h1>
 <form id="ef" autocomplete="off">
-<label class="lbl" for="fS">Sujet</label><select id="fS">${subSel}</select>
+<label class="lbl" for="fS">Sujet</label><select id="fS">${subSel}</select><p class="mu" id="fSH" style="margin:4px 0 0;min-height:18px"></p>
 <label class="lbl" for="fT">Type</label><select id="fT">${TYPES.map(x=>`<option value="${x[0]}"${x[0]===(d.type||lsGet("memoLastType")||"arg")?" selected":""}>${x[1]}</option>`).join("")}</select>
 <label class="lbl" for="fX">Texte (une idée = une fiche)</label><textarea id="fX" rows="5">${esc(d.text||"")}</textarea>
 <button type="button" class="btn" data-a="dictate" style="margin-top:6px;min-height:44px">${ic("mic",18)}Dicter</button>
 <label class="lbl" for="fC">Citation exacte (facultatif)</label><textarea id="fC" rows="3">${esc(d.cite||"")}</textarea>
 <label class="lbl" for="fR">Source</label><select id="fR">${srcOptions(d.src||lsGet("memoLastSrcId")||"")}</select>
+<button type="button" class="btn" id="bkB" style="margin-top:6px;min-height:44px">${ic("cam",18)}Scanner ou chercher un livre</button>
 <div id="fN" hidden><input id="fNT" placeholder="Titre de la nouvelle source"><select id="fNK" style="margin-top:6px">${KINDS.map(k=>`<option>${k}</option>`).join("")}</select></div>
 <div class="g3" style="grid-template-columns:1fr 1fr"><div><label class="lbl" for="fP">Page / minutage</label><input id="fP" value="${esc(d.page||"")}" placeholder="p. 112 ou 23:40"></div>
 <div><label class="lbl" for="fV">Vérifié le</label><input id="fV" type="date" value="${esc(d.verified||"")}"></div></div>
@@ -635,7 +676,12 @@ function editPage(sid,iid){
 <label class="lbl" for="fG">Étiquettes (séparées par des virgules)</label><input id="fG" value="${esc((d.tags||[]).join(", "))}" placeholder="à vérifier, citation">
 <div class="row" style="margin-top:18px"><button type="submit" class="btn pri sp">Enregistrer</button>${isNew?"":`<button type="button" class="btn dg" data-a="delItem" data-s="${sid}" data-i="${iid}">Supprimer</button>`}</div>
 </form></div>`;
-  $("#fR").onchange=e=>{$("#fN").hidden=e.target.value!=="__new"};
+  const planInfo=()=>({text:$("#fX").value,cite:$("#fC").value,tags:$("#fG").value.split(",").map(x=>x.trim()).filter(Boolean),src:$("#fR").value==="__new"?"":$("#fR").value});
+  const hint=()=>{const hs=$("#fS");if(!hs||!$("#fSH"))return;$("#fSH").textContent=hs.value==="__auto"?"Sera classée dans : "+planPlace(planInfo()).label:""};
+  let ht=0;const hintSoon=()=>{clearTimeout(ht);ht=setTimeout(hint,300)};
+  $("#fR").onchange=e=>{$("#fN").hidden=e.target.value!=="__new";hint()};
+  $("#fS").onchange=hint;["#fX","#fC","#fG"].forEach(k=>$(k).addEventListener("input",hintSoon));
+  $("#bkB").onclick=()=>pickBook(id=>{$("#fR").innerHTML=srcOptions(id);$("#fN").hidden=true;hint()});
   drawFI();
   if(d.newSrc){
     const ex=db.sources.find(x=>x.url&&x.url===d.newSrc.url)||db.sources.find(x=>x.id==="s_"+hash32(d.newSrc.title));
@@ -650,19 +696,23 @@ function editPage(sid,iid){
     const tags=[...new Set($("#fG").value.split(",").map(x=>x.trim().replace(/^#/,"")).filter(Boolean))];
     const vals={type:$("#fT").value,text,cite:$("#fC").value.trim(),src,page:$("#fP").value.trim(),verified:$("#fV").value,url,tags,imgs:[...fImgs],u:now()};
     const removed=isNew?[]:(it.imgs||[]).filter(x=>!fImgs.includes(x));
-    const to=$("#fS").value,tf=findSub(to);
+    let to=$("#fS").value,placed="";
+    if(to==="__auto"){const pl=planPlace({text,cite:vals.cite,tags,src});to=commitPlace(pl);placed=pl.label.replace(" (nouveau)","")}
+    const tf=findSub(to);
     if(isNew)tf.sub.items.unshift(newItem(vals));
     else{Object.assign(it,vals);if(to!==sid){f.sub.items=f.sub.items.filter(x=>x!==it);tf.sub.items.unshift(it)}}
     dropImgs(removed);
     lsSet("memoLastType",vals.type);if(src)lsSet("memoLastSrcId",src);lsSet("memoLastSub",to);
     save();go(isNew?"#/t/"+to:"#/f/"+to+"/"+it.id);
+    if(placed)toast("Classée dans : "+placed,4000);
   };
+  hint();
   if(d.dict)setTimeout(()=>dictate(t=>{const x=$("#fX");x.value=(x.value?x.value+" ":"")+t},document.querySelector("[data-a=dictate]"),true),200);
 }
 function sourcesPage(){
   const list=db.sources.slice().sort((a,b)=>a.title.localeCompare(b.title));
   const cnt=s=>allSubs().reduce((n,x)=>n+x.sub.items.filter(i=>i.src===s.id).length,0);
-  $("#app").innerHTML=`<div class="wrap"><div class="bar"><h1 class="ser">Sources</h1><a href="#/r/new" class="btn pri" style="min-height:44px">${ic("plus",18)}Nouvelle</a></div>
+  $("#app").innerHTML=`<div class="wrap"><div class="bar"><h1 class="ser">Sources</h1><span class="row" style="gap:8px"><button class="btn" data-a="bookscan" style="min-height:44px">${ic("cam",18)}Livre</button><a href="#/r/new" class="btn pri" style="min-height:44px">${ic("plus",18)}Nouvelle</a></span></div>
 <p class="mu" style="margin:4px 0 0">Une fiche par œuvre : livre, article, podcast, vidéo…</p>
 <div class="stack">${list.map(s=>`<a class="card row" href="#/r/${s.id}"><span class="bk" style="width:40px;height:50px;border-radius:6px;background:var(--pr);color:#fff;display:flex;align-items:center;justify-content:center">${ic("book",20)}</span><span class="sp"><span class="ct" style="font-size:17px">${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind].filter(Boolean).join(" · "))}</span></span><span class="cnt">${cnt(s)}</span></a>`).join("")||'<p class="mu">Aucune source. Elles se créent aussi toutes seules quand tu ajoutes une fiche.</p>'}</div></div>${tabs("s")}`;
 }
@@ -671,7 +721,7 @@ function sourcePage(id){
   if(!s)return go("#/s");
   const cites=isNew?[]:allSubs().flatMap(x=>x.sub.items.filter(i=>i.src===id).map(i=>[i,x.sub.id,x.sub.name]));
   $("#app").innerHTML=`<div class="wrap"><div class="bar"><a href="#/s" class="back">${ic("back")}Sources</a></div>
-<h1 class="ser">${isNew?"Nouvelle source":esc(s.title)}</h1>
+ <h1 class="ser">${isNew?"Nouvelle source":esc(s.title)}</h1>${s.isbn?`<p class="mu" style="margin:4px 0 0">ISBN ${esc(s.isbn)}${s.cat?" · thème probable : "+esc(s.cat):""}</p>`:""}
 <form id="sf" autocomplete="off">
 <label class="lbl" for="sT">Titre</label><input id="sT" value="${esc(s.title)}" required>
 <label class="lbl" for="sA">Auteur</label><input id="sA" value="${esc(s.author)}">
@@ -751,12 +801,12 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
   };
 }
 function openSheet(sid){
-  const subs=allSubs();if(!subs.length){toast("Crée d’abord un thème, puis un sujet à l’intérieur.");return}
+  const subs=allSubs();
   closeSheet();
-  const cur=sid&&findSub(sid)?sid:(lsGet("memoLastSub")&&findSub(lsGet("memoLastSub"))?lsGet("memoLastSub"):subs[0].sub.id);
+  const cur=sid&&findSub(sid)?sid:"auto";
   const d=document.createElement("div");d.className="ov";d.id="sh";
   d.innerHTML=`<div class="sheet" role="dialog" aria-label="Ajouter une fiche"><div class="h"></div>
-<label class="lbl" for="shT" style="margin:0">Ajouter dans</label><select id="shT">${subs.map(x=>`<option value="${x.sub.id}"${x.sub.id===cur?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("")}</select>
+<label class="lbl" for="shT" style="margin:0">Classer dans</label><select id="shT"><option value="auto"${cur==="auto"?" selected":""}>Automatique (déduit du contenu)</option>${subs.map(x=>`<option value="${x.sub.id}"${x.sub.id===cur?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("")}</select>
 <button class="opt pri" data-o="photo"><span class="ico">${ic("cam",24)}</span><span><b>Photo annotée</b><small>Une page marquée au crayon : je repère les passages</small></span></button>
 <button class="opt" data-o="dict"><span class="ico">${ic("mic")}</span><span><b>Dicter</b><small>Je parle, le texte s’écrit</small></span></button>
 <button class="opt" data-o="paste"><span class="ico">${ic("link")}</span><span><b>Coller un texte ou un lien</b><small>Depuis le presse-papiers</small></span></button>
@@ -765,7 +815,7 @@ function openSheet(sid){
   d.onclick=async e=>{
     if(e.target===d){closeSheet();return}
     const b=e.target.closest("[data-o]");if(!b)return;
-    const t=$("#shT").value,o=b.dataset.o;lsSet("memoLastSub",t);closeSheet();
+    const t=$("#shT").value,o=b.dataset.o;if(t!=="auto")lsSet("memoLastSub",t);closeSheet();
     if(o==="photo")pickPhoto(t);
     else if(o==="img")pickImgs(ids=>{draft={imgs:ids};go("#/e/"+t+"/new")});
     else if(o==="write")go("#/e/"+t+"/new");
@@ -820,6 +870,7 @@ document.addEventListener("click",e=>{
     if(confirm(n?"Supprimer cette source ? Les "+n+" fiche(s) liées resteront, sans source.":"Supprimer cette source ?")){allSubs().forEach(x=>x.sub.items.forEach(i=>{if(i.src===id)i.src=""}));db.sources=db.sources.filter(s=>s.id!==id);save();go("#/s")}
   }
   else if(a==="shareSub")openShareSheet(sid);
+  else if(a==="bookscan")pickBook(id=>go("#/r/"+id));
   else if(a==="exp"){
     closeSheet();const d=document.createElement("div");d.className="ov noprint";d.id="sh";
     d.innerHTML=`<div class="sheet" role="dialog" aria-label="Exporter l’antisèche"><div class="h"></div><h2 class="ct" style="margin:0 0 6px">Exporter l’antisèche</h2>
@@ -866,5 +917,6 @@ setTimeout(gcImgs,8000);
 if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js");
 </script>
 <script src="photo.js"></script>
+<script src="book.js"></script>
 </body>
 </html>
