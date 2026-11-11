@@ -213,8 +213,9 @@ const srcLabel=it=>{const s=srcOf(it);return[s?s.title:"",pageLabel(it)].filter(
 const fmtDate=d=>d&&/^\d{4}-\d\d-\d\d$/.test(d)?d.split("-").reverse().join("/"):d||"";
 const nItems=s=>s.items.length;
 const nStar=s=>s.items.filter(i=>i.star).length;
+const safeUrl=u=>/^https?:\/\//i.test(u||"")?u:"";
 function media(u){
-  if(!u)return"";
+  u=safeUrl(u);if(!u)return"";
   const y=u.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
   if(y)return`<div class="med"><iframe src="https://www.youtube.com/embed/${y[1]}" allowfullscreen loading="lazy"></iframe></div>`;
   if(/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u))return`<div class="med"><img src="${esc(u)}" alt="" loading="lazy"></div>`;
@@ -296,6 +297,109 @@ async function gcImgs(){
 const imgsHTML=(it,all)=>{const a=it.imgs||[];if(!a.length)return"";return(all?a:a.slice(0,1)).map(i=>`<img class="cimg" data-img="${i}" alt="">`).join("")+(!all&&a.length>1?`<span class="mu">+ ${a.length-1} autre${a.length>2?"s":""} image${a.length>2?"s":""}</span>`:"")};
 const drawFI=()=>{const e=$("#fI");if(e)e.innerHTML=fImgs.map(id=>`<div class="tw"><img class="thumb" data-img="${id}" alt=""><button type="button" class="rm" data-a="rmimg" data-i="${id}" aria-label="Retirer l’image">×</button></div>`).join("")};
 
+/* ===== Export Word (.docx généré ici, sans bibliothèque) ===== */
+const X=t=>String(t??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const wRun=(t,o={})=>String(t).split("\n").map((p,i)=>`<w:r><w:rPr>${o.b?"<w:b/>":""}${o.i?"<w:i/>":""}${o.c?`<w:color w:val="${o.c}"/>`:""}<w:sz w:val="${o.s||22}"/></w:rPr>${i?"<w:br/>":""}<w:t xml:space="preserve">${X(p)}</w:t></w:r>`).join("");
+const wPar=(r,o={})=>`<w:p><w:pPr>${o.keep?"<w:keepNext/>":""}<w:spacing w:before="${o.bf||0}" w:after="${o.af??100}"/></w:pPr>${r}</w:p>`;
+const CRC=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+const crc32=u=>{let c=0xFFFFFFFF;for(let i=0;i<u.length;i++)c=CRC[(c^u[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0};
+function zipBlob(files,type){
+  const enc=new TextEncoder(),parts=[],cd=[];let off=0;
+  const u16=n=>[n&255,(n>>8)&255],u32=n=>[n&255,(n>>8)&255,(n>>16)&255,(n>>>24)&255];
+  for(const f of files){
+    const nm=enc.encode(f.name),data=enc.encode(f.data),crc=crc32(data),sz=data.length;
+    const h=new Uint8Array([0x50,0x4b,3,4,...u16(20),...u16(0x0800),...u16(0),...u16(0),...u16(0x21),...u32(crc),...u32(sz),...u32(sz),...u16(nm.length),...u16(0)]);
+    parts.push(h,nm,data);cd.push({nm,crc,sz,off});off+=h.length+nm.length+sz;
+  }
+  const start=off;
+  for(const c of cd){
+    const h=new Uint8Array([0x50,0x4b,1,2,...u16(20),...u16(20),...u16(0x0800),...u16(0),...u16(0),...u16(0x21),...u32(c.crc),...u32(c.sz),...u32(c.sz),...u16(c.nm.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(c.off)]);
+    parts.push(h,c.nm);off+=h.length+c.nm.length;
+  }
+  parts.push(new Uint8Array([0x50,0x4b,5,6,0,0,0,0,...u16(cd.length),...u16(cd.length),...u32(off-start),...u32(start),0,0]));
+  return new Blob(parts,{type});
+}
+function docxBlob(d){
+  const W='xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  let b=wPar(wRun(d.name,{b:1,s:36}),{af:60})+wPar(wRun((d.theme?d.theme+" · ":"")+d.items.length+" fiche"+(d.items.length>1?"s":"")+" · "+new Date().toLocaleDateString("fr-FR"),{s:18,c:"666666"}),{af:240});
+  for(const it of d.items){
+    const t=typeOf(it.type)[1];
+    b+=wPar(wRun(t.toUpperCase()+(it.sub?" · "+it.sub:""),{b:1,c:"1F3A5F",s:18}),{bf:200,af:40,keep:1});
+    b+=wPar(wRun(it.text||it.url||"",{s:24}));
+    if(it.cite&&it.cite!==it.text)b+=wPar(wRun("« "+it.cite+" »",{i:1,c:"444444"}));
+    const s=it.src,ref=[s?s.title+(s.author?" ("+s.author+(s.year?", "+s.year:"")+")":""):"",it.page?(s&&(s.kind==="Podcast"||s.kind==="Vidéo")?"à ":/^\d/.test(it.page)?"p. ":"")+it.page:"",it.verified?"vérifié le "+fmtDate(it.verified):""].filter(Boolean).join(" · ");
+    if(ref)b+=wPar(wRun(ref,{s:18,c:"666666"}),{af:30});
+    const x=[it.url,(it.tags||[]).map(t=>"#"+t).join(" ")].filter(Boolean).join("   ");
+    if(x)b+=wPar(wRun(x,{s:18,c:"666666"}));
+  }
+  b+='<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>';
+  return zipBlob([
+    {name:"[Content_Types].xml",data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'},
+    {name:"_rels/.rels",data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'},
+    {name:"word/document.xml",data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document '+W+'><w:body>'+b+'</w:body></w:document>'}
+  ],"application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+}
+function download(blob,name){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.append(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},4000)}
+const fileName=n=>(String(n).normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[—–]/g,"-").replace(/[^\x20-\x7e]|[\\/:*?"<>|]/g,"").replace(/\s+/g," ").trim().slice(0,60)||"memo-debat");
+const srcInfo=it=>{const s=srcOf(it);return s?{title:s.title,author:s.author,year:s.year,kind:s.kind,url:s.url}:null};
+const pubItem=(it,sub)=>({type:it.type,text:it.text,cite:it.cite,page:it.page,verified:it.verified,url:it.url,tags:it.tags||[],src:srcInfo(it),sub});
+function exportDocx(d){if(!d.items.length){toast("Aucune fiche à exporter.");return}download(docxBlob(d),fileName(d.name)+".docx");toast("Fichier Word créé : "+d.items.length+" fiche"+(d.items.length>1?"s":"")+".")}
+
+/* ===== Lien de partage en lecture seule (un sujet, copie figée, sans images) ===== */
+const rid=()=>{const a=new Uint8Array(12);crypto.getRandomValues(a);return[...a].map(x=>x.toString(36).padStart(2,"0").slice(-2)).join("")};
+const shareLink=id=>location.origin+location.pathname+"#/p/"+id;
+function shareSnapshot(f,all){return{v:1,theme:f.theme.name,name:f.sub.name,at:now(),items:f.sub.items.filter(i=>all||i.star).map(i=>pubItem(i))}}
+async function pushShare(f,all){
+  const tk=await token(),id=f.sub.share?f.sub.share.id:rid();
+  await sb("/rest/v1/shares?on_conflict=id",{method:"POST",token:tk,prefer:"resolution=merge-duplicates,return=minimal",body:{id,user_id:auth.user.id,sub_id:f.sub.id,title:f.sub.name,data:shareSnapshot(f,all)}});
+  f.sub.share={id,all:!!all,at:now()};f.sub.u=now();save();return id;
+}
+async function stopShare(f){
+  const tk=await token();
+  await sb("/rest/v1/shares?id=eq."+encodeURIComponent(f.sub.share.id),{method:"DELETE",token:tk});
+  delete f.sub.share;f.sub.u=now();save();
+}
+function openShareSheet(sid){
+  const f=findSub(sid);if(!f)return;closeSheet();
+  const nS=nStar(f.sub),nA=nItems(f.sub);
+  const d=document.createElement("div");d.className="ov";d.id="sh";
+  const body=()=>{const sh=f.sub.share;return !auth?`<p class="mu" style="margin:0">Pour créer un lien, connecte-toi d’abord (onglet Compte).</p><a class="btn pri" href="#/c" data-o="close">Aller au compte</a>`
+  :sh?`<p class="mu" style="margin:0">Lien de lecture seule — ${sh.all?"toutes les fiches":"fiches en antisèche"}, copie du ${new Date(sh.at).toLocaleDateString("fr-FR")}. Les images ne sont pas incluses.</p>
+<input id="shL" readonly value="${esc(shareLink(sh.id))}" aria-label="Lien de partage">
+<div class="row"><button class="btn pri sp" data-o="copy">Copier / envoyer</button><button class="btn" data-o="upd">Mettre à jour</button></div>
+<button class="btn dg" data-o="stop">Arrêter le partage</button>`
+  :`<p class="mu" style="margin:0">Crée un lien que n’importe qui peut lire, sans compte. C’est une copie figée du sujet : tu peux la mettre à jour ou l’arrêter quand tu veux. Les images ne sont pas incluses.</p>
+<label class="chk"><input type="radio" name="shA" value="0" checked><span>Fiches en antisèche (${nS})</span></label>
+<label class="chk"><input type="radio" name="shA" value="1"><span>Toutes les fiches (${nA})</span></label>
+<button class="btn pri" data-o="mk">Créer le lien</button>`};
+  const draw=()=>{d.innerHTML=`<div class="sheet" role="dialog" aria-label="Partager le sujet"><div class="h"></div><h2 class="ct" style="margin:0">Partager « ${esc(f.sub.name)} »</h2>${body()}<button class="btn gh" data-o="close">Fermer</button></div>`};
+  draw();
+  d.onclick=async e=>{
+    if(e.target===d){closeSheet();return}
+    const b=e.target.closest("[data-o]");if(!b)return;
+    const o=b.dataset.o;
+    if(o==="close"){closeSheet();return}
+    try{
+      if(o==="mk"){const all=d.querySelector("input[name=shA]:checked").value==="1";if(!(all?nA:nS)){toast(all?"Ce sujet n’a aucune fiche.":"Aucune fiche en antisèche : touche l’étoile d’une fiche, ou choisis « Toutes les fiches ».",5000);return}b.disabled=true;await pushShare(f,all);draw()}
+      else if(o==="upd"){b.disabled=true;await pushShare(f,f.sub.share.all);toast("Lien mis à jour.");draw()}
+      else if(o==="stop"){if(!confirm("Arrêter le partage ? Le lien ne fonctionnera plus."))return;await stopShare(f);draw()}
+      else if(o==="copy"){const l=shareLink(f.sub.share.id);if(navigator.share)navigator.share({title:f.sub.name,url:l}).catch(()=>{});else if(navigator.clipboard)navigator.clipboard.writeText(l).then(()=>toast("Lien copié."));else{const i=$("#shL");i.focus();i.select()}}
+    }catch(x){toast("Échec : "+(x instanceof TypeError?"pas de connexion internet.":x.message),5000);draw()}
+  };
+  document.body.append(d);
+}
+async function sharePage(id){
+  $("#app").innerHTML=`<div class="wrap"><p class="mu">Chargement…</p></div>`;
+  let d=null,err="";
+  try{d=await sb("/rest/v1/rpc/get_share",{method:"POST",body:{p_id:id}})}catch(e){err=e instanceof TypeError?"Pas de connexion internet.":"Lecture impossible : "+e.message}
+  if(!d||!Array.isArray(d.items)){$("#app").innerHTML=`<div class="wrap"><h1 class="ser">Mémo Débat</h1><p class="mu" style="margin-top:12px">${esc(err||"Ce lien n’existe plus ou a été arrêté par son auteur.")}</p><a class="btn" href="#/" style="margin-top:12px">Ouvrir l’application</a></div>`;return}
+  const ref=it=>{const s=it.src;return[s?s.title+(s.author?" — "+s.author:""):"",it.page?(s&&(s.kind==="Podcast"||s.kind==="Vidéo")?"à ":/^\d/.test(it.page)?"p. ":"")+it.page:""].filter(Boolean).join(" · ")};
+  $("#app").innerHTML=`<div class="wrap"><div class="bar noprint"><span class="mu">Partagé en lecture seule</span><button class="btn gh" data-a="a4">${ic("print",18)}Imprimer / PDF</button></div>
+<h1 class="ser">${esc(d.name)}</h1><p class="mu" style="margin:4px 0 0">${esc(d.theme||"")} · ${d.items.length} fiche${d.items.length>1?"s":""} · copie du ${new Date(d.at).toLocaleDateString("fr-FR")}</p>
+<div class="stack">${d.items.map(it=>`<div class="card it"><div class="top">${badge(it.type)}</div><p class="txt" style="-webkit-line-clamp:unset;display:block">${esc(it.text||it.url)}</p>${media(it.url)}${it.cite&&it.cite!==it.text?`<p class="cite">« ${esc(it.cite)} »</p>`:""}${ref(it)?`<div class="src">${ic("book",16)}<span>${esc(ref(it))}</span></div>`:""}${it.verified?`<div class="src">Vérifié le ${esc(fmtDate(it.verified))}</div>`:""}${safeUrl(it.url)?`<div class="src"><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,50))}</a></div>`:""}${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<span class="chip sm">#${esc(t)}</span>`).join("")}</div>`:""}</div>`).join("")}</div>
+<p class="mu noprint" style="margin-top:20px">Créé avec Mémo Débat.</p></div>`;
+}
+
 /* ===== Partage depuis Android (lien YouTube, page web, texte) ===== */
 let shareDraft=null;
 function shareStart(){
@@ -368,7 +472,7 @@ function mergeDb(a,b){
   for(const t of[...a.themes,...b.themes]){
     let T=th.get(t.id);if(!T){T={id:t.id,name:t.name,u:t.u,subs:[]};th.set(t.id,T)}else if((t.u||"")>(T.u||"")){T.name=t.name;T.u=t.u}
     for(const s of t.subs){
-      let S=T.subs.find(x=>x.id===s.id);if(!S){S={id:s.id,name:s.name,u:s.u,items:[]};T.subs.push(S)}else if((s.u||"")>(S.u||"")){S.name=s.name;S.u=s.u}
+      let S=T.subs.find(x=>x.id===s.id);if(!S){S={id:s.id,name:s.name,u:s.u,share:s.share,items:[]};T.subs.push(S)}else{if((s.u||"")>(S.u||"")){S.name=s.name;S.u=s.u}S.share=S.share||s.share}
       for(const it of s.items){const i=S.items.findIndex(x=>x.id===it.id);if(i<0)S.items.push(it);else S.items[i]=pick(S.items[i],it)}
     }
   }
@@ -485,6 +589,7 @@ function subPage(id){
 <div class="bar"><a href="#/h/${theme.id}" class="back">${ic("back")}${esc(theme.name)}</a><a href="#/a/${id}" class="btn hl" style="min-height:40px;border-radius:99px;font-size:14px">${ic("star",16)}Antisèche</a></div>
 <h1 class="ser">${esc(sub.name)}</h1>
 <p class="mu" style="margin:4px 0 0">${nItems(sub)} fiche${nItems(sub)>1?"s":""} · ${nStar(sub)} en antisèche <button class="btn gh" data-a="renSub" data-s="${id}" style="min-height:28px">Renommer</button><button class="btn gh dg" data-a="delSub" data-s="${id}" style="min-height:28px">Supprimer</button></p>
+<div class="chips" style="margin-top:10px"><button class="chip sm" data-a="shareSub" data-s="${id}">Partager le sujet</button><button class="chip sm" data-a="docSub" data-s="${id}">Exporter en Word</button></div>
 <div class="chips scroll" style="margin-top:12px"><button class="chip ${flt==="all"?"on":""}" data-a="flt" data-f="all">Tout</button><button class="chip ${flt==="star"?"on":""}" data-a="flt" data-f="star">En antisèche</button>${types.map(c=>`<button class="chip ${flt===c?"on":""}" data-a="flt" data-f="${c}">${typeOf(c)[1]}</button>`).join("")}</div>
 <div class="stack">${items.map(i=>itemCard(i,id)).join("")||'<p class="mu">Rien ici pour le moment. Touche + pour ajouter une fiche.</p>'}</div>
 </div>${fab(id)}${tabs("h")}`;
@@ -500,7 +605,7 @@ function fiche(sid,iid){
 ${it.imgs&&it.imgs.length?`<div class="gal">${it.imgs.map(i=>`<img data-img="${i}" data-a="zoom" alt="">`).join("")}</div>`:""}
 ${it.cite&&it.cite!==it.text?`<div class="card"><h2 class="sec">Citation exacte</h2><p class="cite">« ${esc(it.cite)} »</p></div>`:""}
 ${s?`<a class="srcbox" href="#/r/${s.id}"><span class="bk">${ic("book",22)}</span><span class="sp"><span class="ct" style="font-size:17px">${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind!=="Autre"?s.kind:""].filter(Boolean).join(" · "))}</span>${same?`<br><span style="font-size:13px;color:var(--pr);font-weight:500">${same} autre${same>1?"s":""} fiche${same>1?"s":""} de cette source</span>`:""}</span>${ic("chev",18)}</a>`:""}
-${it.page||it.verified||it.url?`<div class="meta">${row("Page / minutage",esc(pageLabel(it)))}${row("Vérifié le",esc(fmtDate(it.verified)))}${it.url?`<div><span>Lien</span><b><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,40))}</a></b></div>`:""}</div>`:""}
+${it.page||it.verified||it.url?`<div class="meta">${row("Page / minutage",esc(pageLabel(it)))}${row("Vérifié le",esc(fmtDate(it.verified)))}${it.url?`<div><span>Lien</span><b>${safeUrl(it.url)?`<a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,40))}</a>`:esc(it.url.slice(0,40))}</b></div>`:""}</div>`:""}
 ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<button class="chip sm" data-a="tag" data-t="${esc(t)}">#${esc(t)}</button>`).join("")}</div>`:""}
 </div></div>
 <div class="bb"><div><button class="btn hl" data-a="star2" data-s="${sid}" data-i="${iid}">${ic("star",20)}${it.star?"Dans l’antisèche":"Ajouter à l’antisèche"}</button><button class="btn" style="flex:0 0 140px" data-a="share" data-s="${sid}" data-i="${iid}">${ic("share",20)}Partager</button></div></div>`;
@@ -601,7 +706,7 @@ function cheat(id){
 <h1 class="ser" style="margin-top:6px">${esc(title)}</h1>
 <div class="stack"><div class="srch noprint">${ic("search")}<input id="aq" type="search" placeholder="Filtrer : « productivité »…" value="${esc(aq)}" aria-label="Filtrer"><button class="mic" data-a="mica" aria-label="Recherche vocale">${ic("mic")}</button></div>
 <div id="al" class="stack" style="margin:0"></div></div></div>
-<div class="bb noprint"><div><button class="btn" data-a="a6">${ic("print",18)}Cartes A6</button><button class="btn" data-a="a4">${ic("print",18)}PDF</button></div></div></div>`;
+<div class="bb noprint"><div><button class="btn" data-a="a6">${ic("print",18)}Cartes A6</button><button class="btn" data-a="exp" data-s="${id}">${ic("share",18)}PDF / Word</button></div></div></div>`;
   const fl=()=>{
     const v=aq.trim().toLowerCase(),r=all.filter(([i])=>!v||[i.text,i.cite,(i.tags||[]).join(" "),srcLabel(i)].join(" ").toLowerCase().includes(v));
     $("#al").innerHTML=r.map(([i,sid,lab])=>`<div class="card it"><div class="top">${badge(i.type)}</div><p class="txt">${esc(i.text||i.url)}</p>${imgsHTML(i,true)}${i.cite&&i.cite!==i.text?`<p class="cite" style="font-size:15px;color:#C9C6BD">« ${esc(i.cite)} »</p>`:""}${srcLabel(i)||lab?`<div class="src">${esc([lab,srcLabel(i)].filter(Boolean).join(" · "))}</div>`:""}</div>`).join("")||`<p class="mu">${all.length?"Aucune fiche ne correspond.":"Aucune fiche étoilée ici. Touche l’étoile d’une fiche pour la mettre en antisèche."}</p>`;
@@ -687,6 +792,7 @@ function route(){
   else if(k==="r"&&p[1])sourcePage(p[1]);
   else if(k==="a")p[1]?cheat(p[1]):debatePicker();
   else if(k==="c")accountPage();
+  else if(k==="p"&&p[1])sharePage(p[1]);
   else home();
 }
 addEventListener("hashchange",()=>{flt="all";aq="";route()});
@@ -712,6 +818,23 @@ document.addEventListener("click",e=>{
   else if(a==="delSrc"){
     const id=b.dataset.r,n=allSubs().reduce((c,x)=>c+x.sub.items.filter(i=>i.src===id).length,0);
     if(confirm(n?"Supprimer cette source ? Les "+n+" fiche(s) liées resteront, sans source.":"Supprimer cette source ?")){allSubs().forEach(x=>x.sub.items.forEach(i=>{if(i.src===id)i.src=""}));db.sources=db.sources.filter(s=>s.id!==id);save();go("#/s")}
+  }
+  else if(a==="shareSub")openShareSheet(sid);
+  else if(a==="exp"){
+    closeSheet();const d=document.createElement("div");d.className="ov noprint";d.id="sh";
+    d.innerHTML=`<div class="sheet" role="dialog" aria-label="Exporter l’antisèche"><div class="h"></div><h2 class="ct" style="margin:0 0 6px">Exporter l’antisèche</h2>
+<button class="opt" data-a="a4"><span class="ico">${ic("print")}</span><span><b>PDF (A4)</b><small>Imprimer ou enregistrer en PDF</small></span></button>
+<button class="opt" data-a="docA" data-s="${sid}"><span class="ico">${ic("share")}</span><span><b>Word (.docx)</b><small>Fichier modifiable, fiches en antisèche</small></span></button>
+<button class="btn gh" data-o="close">Fermer</button></div>`;
+    d.addEventListener("click",e=>{if(e.target===d||e.target.closest("[data-o],[data-a]"))closeSheet()},true);
+    document.body.append(d);
+  }
+  else if(a==="docSub"){
+    const f=findSub(sid);exportDocx({name:f.sub.name,theme:f.theme.name,items:f.sub.items.filter(i=>flt==="all"||(flt==="star"?i.star:i.type===flt)).map(i=>pubItem(i))});
+  }
+  else if(a==="docA"){
+    const subs=sid==="all"?allSubs():[findSub(sid)].filter(Boolean);
+    exportDocx({name:sid==="all"?"Antisèche — toutes les fiches":"Antisèche — "+subs[0].sub.name,theme:sid==="all"?"":subs[0].theme.name,items:subs.flatMap(x=>x.sub.items.filter(i=>i.star).map(i=>pubItem(i,sid==="all"?x.sub.name:"")))});
   }
   else if(a==="addimg")pickImgs(ids=>{fImgs.push(...ids);drawFI()});
   else if(a==="rmimg"){fImgs=fImgs.filter(x=>x!==iid);drawFI()}
