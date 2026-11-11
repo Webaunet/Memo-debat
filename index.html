@@ -95,6 +95,13 @@ textarea{resize:vertical;min-height:90px;font-family:var(--ser);font-size:16px}
 .opt:disabled{opacity:.5}
 #st{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom));z-index:40;max-width:90%;background:var(--tx);color:#fff;border-radius:12px;padding:10px 14px;font-size:14px;text-align:center}
 #st:empty{display:none}
+.imgs{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.tw{position:relative}
+.thumb{width:96px;height:96px;object-fit:cover;border-radius:12px;border:1px solid var(--ln);background:#eee;display:block}
+.rm{position:absolute;top:-6px;right:-6px;width:28px;height:28px;border-radius:50%;background:var(--tx);color:#fff;text-align:center;line-height:26px;font-size:18px;padding:0}
+.cimg{width:100%;max-height:200px;object-fit:cover;border-radius:12px;display:block;background:#e9e6df}
+.gal{display:flex;flex-direction:column;gap:10px}.gal img{width:100%;min-height:60px;border-radius:12px;display:block;cursor:zoom-in;background:#e9e6df}
+.lb{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;padding:10px}.lb img{max-width:100%;max-height:100%;object-fit:contain}
 /* antisèche (sombre) */
 .dk{color:#F2EFE8}
 .dk .back,.dk .mu,.dk .src{color:#A9A69D}
@@ -216,6 +223,111 @@ function media(u){
 function go(h){if(location.hash===h)route();else location.hash=h}
 let tT=0;function toast(m,ms=3200){const e=$("#st");e.textContent=m;clearTimeout(tT);if(ms)tT=setTimeout(()=>{e.textContent=""},ms)}
 
+/* ===== Images (compressées ~200 Ko : copie locale + Supabase Storage) ===== */
+let _idb=null;
+const idb=()=>_idb||(_idb=new Promise((ok,ko)=>{const r=indexedDB.open("memo-img",1);r.onupgradeneeded=()=>r.result.createObjectStore("img",{keyPath:"id"});r.onsuccess=()=>ok(r.result);r.onerror=()=>ko(r.error)}));
+const idbDo=async(mode,fn)=>{const d=await idb();return new Promise((ok,ko)=>{const t=d.transaction("img",mode),q=fn(t.objectStore("img"));t.oncomplete=()=>ok(q&&q.result);t.onerror=()=>ko(t.error)})};
+const idbPut=r=>idbDo("readwrite",s=>s.put(r)),idbGet=id=>idbDo("readonly",s=>s.get(id)),idbDel=id=>idbDo("readwrite",s=>s.delete(id)),idbAll=()=>idbDo("readonly",s=>s.getAll());
+const urlCache=new Map();let imgBusy=false,fImgs=[];
+async function compress(file){
+  const bmp=await createImageBitmap(file);let s=Math.min(1,1400/Math.max(bmp.width,bmp.height)),q=.8,blob=null;
+  for(let i=0;i<8;i++){
+    const c=document.createElement("canvas");c.width=Math.max(1,Math.round(bmp.width*s));c.height=Math.max(1,Math.round(bmp.height*s));
+    const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(bmp,0,0,c.width,c.height);
+    blob=await new Promise(r=>c.toBlob(r,"image/jpeg",q));
+    if(blob&&blob.size<=200*1024)break;
+    if(q>.55)q-=.1;else s*=.85;
+  }
+  if(bmp.close)bmp.close();
+  if(!blob)throw new Error("compression impossible");
+  return blob;
+}
+function pickImgs(cb){
+  const i=document.createElement("input");i.type="file";i.accept="image/*";i.multiple=true;i.style.display="none";document.body.append(i);
+  i.onchange=async()=>{
+    const fs=[...i.files];i.remove();if(!fs.length)return;toast("Préparation de l’image…",0);const ids=[];
+    for(const f of fs){try{const blob=await compress(f),id=uid();await idbPut({id,blob,up:0,t:Date.now()});ids.push(id)}catch(e){toast("Image illisible : "+e.message)}}
+    if(ids.length){toast(ids.length>1?ids.length+" images prêtes.":"Image prête.",1500);flushImages();cb(ids)}
+  };
+  i.click();
+}
+async function flushImages(){
+  if(!auth||imgBusy)return;imgBusy=true;
+  try{
+    const tk=await token();
+    for(const r of await idbAll()){
+      if(r.up)continue;
+      const x=await fetch(SB_URL+"/storage/v1/object/memo-img/"+auth.user.id+"/"+r.id+".jpg",{method:"POST",headers:{apikey:SB_KEY,Authorization:"Bearer "+tk,"Content-Type":"image/jpeg","x-upsert":"true"},body:r.blob});
+      if(!x.ok)throw new Error("HTTP "+x.status);
+      r.up=1;await idbPut(r);
+    }
+  }catch(e){}finally{imgBusy=false}
+}
+async function imgUrl(id){
+  if(urlCache.has(id))return urlCache.get(id);
+  let r=null;try{r=await idbGet(id)}catch(e){}
+  if(!r&&auth){
+    try{
+      const tk=await token(),x=await fetch(SB_URL+"/storage/v1/object/authenticated/memo-img/"+auth.user.id+"/"+id+".jpg",{headers:{apikey:SB_KEY,Authorization:"Bearer "+tk}});
+      if(x.ok){r={id,blob:await x.blob(),up:1,t:Date.now()};try{await idbPut(r)}catch(e){}}
+    }catch(e){}
+  }
+  if(!r)return null;
+  const u=URL.createObjectURL(r.blob);urlCache.set(id,u);return u;
+}
+function hydrate(){document.querySelectorAll("img[data-img]:not([data-ok])").forEach(async im=>{im.dataset.ok="1";const u=await imgUrl(im.dataset.img);if(u)im.src=u;else im.alt="Image indisponible (reconnecte-toi ou reviens en ligne)"})}
+new MutationObserver(hydrate).observe(document.getElementById("app"),{childList:true,subtree:true});
+async function dropImgs(ids){
+  for(const id of ids){
+    try{
+      const r=await idbGet(id);await idbDel(id);
+      const u=urlCache.get(id);if(u){URL.revokeObjectURL(u);urlCache.delete(id)}
+      if(auth&&(!r||r.up)){const tk=await token();fetch(SB_URL+"/storage/v1/object/memo-img/"+auth.user.id+"/"+id+".jpg",{method:"DELETE",headers:{apikey:SB_KEY,Authorization:"Bearer "+tk}}).catch(()=>{})}
+    }catch(e){}
+  }
+}
+async function gcImgs(){
+  try{
+    if(!hasData(db)||(auth&&!meta.synced))return;
+    const used=new Set(allSubs().flatMap(x=>x.sub.items.flatMap(i=>i.imgs||[])));
+    for(const r of await idbAll())if(!used.has(r.id)&&Date.now()-(r.t||0)>864e5)await dropImgs([r.id]);
+  }catch(e){}
+}
+const imgsHTML=(it,all)=>{const a=it.imgs||[];if(!a.length)return"";return(all?a:a.slice(0,1)).map(i=>`<img class="cimg" data-img="${i}" alt="">`).join("")+(!all&&a.length>1?`<span class="mu">+ ${a.length-1} autre${a.length>2?"s":""} image${a.length>2?"s":""}</span>`:"")};
+const drawFI=()=>{const e=$("#fI");if(e)e.innerHTML=fImgs.map(id=>`<div class="tw"><img class="thumb" data-img="${id}" alt=""><button type="button" class="rm" data-a="rmimg" data-i="${id}" aria-label="Retirer l’image">×</button></div>`).join("")};
+
+/* ===== Partage depuis Android (lien YouTube, page web, texte) ===== */
+let shareDraft=null;
+function shareStart(){
+  const q=new URLSearchParams(location.search);
+  if(!(q.has("title")||q.has("text")||q.has("url")))return;
+  const t=(q.get("title")||"").trim(),x=(q.get("text")||"").trim(),u=(q.get("url")||"").trim();
+  history.replaceState(null,"",location.pathname+location.hash);
+  const m=(u||x).match(/https?:\/\/[^\s]+/),url=u||(m?m[0]:"");
+  let txt=url?x.replace(url,"").trim():x;if(txt===t)txt="";
+  let host="";try{host=new URL(url).hostname.replace(/^www\./,"")}catch(e){}
+  const yt=/youtu\.?be/.test(url);
+  openShare({text:txt,url,newSrc:url?{title:t||host||"Lien partagé",kind:yt?"Vidéo":"Site",url}:null});
+}
+function openShare(dr){
+  const subs=allSubs();if(!subs.length){toast("Crée d’abord un thème et un sujet, puis repartage.",6000);return}
+  closeSheet();
+  const cur=lsGet("memoLastSub")&&findSub(lsGet("memoLastSub"))?lsGet("memoLastSub"):subs[0].sub.id;
+  const d=document.createElement("div");d.className="ov";d.id="sh";
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Ajouter le contenu partagé"><div class="h"></div>
+<h2 class="ct" style="margin:0 0 4px">Ajouter à Mémo Débat</h2>
+<p class="mu" style="margin:0;word-break:break-all">${esc((dr.newSrc&&dr.newSrc.title)||dr.url||dr.text).slice(0,160)}</p>
+<label class="lbl" for="shT">Dans le sujet</label><select id="shT">${subs.map(x=>`<option value="${x.sub.id}"${x.sub.id===cur?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("")}</select>
+<div class="row" style="margin-top:12px"><button class="btn pri sp" data-o="go">Continuer</button><button class="btn" data-o="no">Annuler</button></div></div>`;
+  d.onclick=e=>{
+    if(e.target===d){closeSheet();return}
+    const b=e.target.closest("[data-o]");if(!b)return;
+    const t=$("#shT").value;closeSheet();
+    if(b.dataset.o==="go"){lsSet("memoLastSub",t);draft=dr;go("#/e/"+t+"/new")}
+  };
+  document.body.append(d);
+}
+
 /* ===== Connexion et synchro (Supabase, API REST) ===== */
 let auth=null;try{auth=JSON.parse(lsGet("memoAuth")||"null")}catch(e){}
 let meta={synced:false,last:""};try{meta=JSON.parse(lsGet("memoSync")||"")||meta}catch(e){}
@@ -281,7 +393,7 @@ async function syncNow(manual){
       else if(rt>lt){db=rd;db.updated=remote.updated_at;lsSet("memo",JSON.stringify(db));rerender()}
       else if(lt>rt)await push();
     }
-    meta={synced:true,last:now()};lsSet("memoSync",JSON.stringify(meta));syncState="ok";
+    meta={synced:true,last:now()};lsSet("memoSync",JSON.stringify(meta));syncState="ok";flushImages();
   }catch(e){syncState=(!navigator.onLine||e instanceof TypeError)?"offline":"err";syncMsg=e.message;if(!auth)syncState="off"}
   finally{syncBusy=false;updSync();if(syncAgain){syncAgain=false;queuePush()}}
 }
@@ -314,7 +426,7 @@ function starBtn(it,sid){return`<button class="star ${it.star?"on":""}" data-a="
 function itemCard(it,sid,label){
   const sl=srcLabel(it);
   return`<a class="card it" href="#/f/${sid}/${it.id}"><div class="top">${badge(it.type)}${starBtn(it,sid)}</div>
-<p class="txt">${esc(it.text||it.url)}</p>
+<p class="txt">${esc(it.text||it.url)}</p>${imgsHTML(it)}
 ${sl||label?`<div class="src">${ic("book",16)}<span>${esc([label,sl].filter(Boolean).join(" · "))}</span></div>`:""}
 ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<span class="chip sm">#${esc(t)}</span>`).join("")}</div>`:""}</a>`;
 }
@@ -385,6 +497,7 @@ function fiche(sid,iid){
 <div class="bar"><a href="#/t/${sid}" class="back">${ic("back")}${esc(f.sub.name)}</a><a href="#/e/${sid}/${iid}" class="btn gh" aria-label="Modifier">${ic("edit")}Modifier</a></div>
 <div class="stack" style="margin-top:6px"><span>${badge(it.type)}</span>
 <p class="big">${esc(it.text||it.url)}</p>${media(it.url)}
+${it.imgs&&it.imgs.length?`<div class="gal">${it.imgs.map(i=>`<img data-img="${i}" data-a="zoom" alt="">`).join("")}</div>`:""}
 ${it.cite&&it.cite!==it.text?`<div class="card"><h2 class="sec">Citation exacte</h2><p class="cite">« ${esc(it.cite)} »</p></div>`:""}
 ${s?`<a class="srcbox" href="#/r/${s.id}"><span class="bk">${ic("book",22)}</span><span class="sp"><span class="ct" style="font-size:17px">${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind!=="Autre"?s.kind:""].filter(Boolean).join(" · "))}</span>${same?`<br><span style="font-size:13px;color:var(--pr);font-weight:500">${same} autre${same>1?"s":""} fiche${same>1?"s":""} de cette source</span>`:""}</span>${ic("chev",18)}</a>`:""}
 ${it.page||it.verified||it.url?`<div class="meta">${row("Page / minutage",esc(pageLabel(it)))}${row("Vérifié le",esc(fmtDate(it.verified)))}${it.url?`<div><span>Lien</span><b><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,40))}</a></b></div>`:""}</div>`:""}
@@ -397,7 +510,7 @@ function srcOptions(sel){return`<option value="">(aucune)</option>${db.sources.s
 function editPage(sid,iid){
   const isNew=iid==="new";let f=findSub(sid),it=isNew?null:f&&f.sub.items.find(x=>x.id===iid);
   if(!isNew&&!it)return go("#/");
-  const d=isNew?(draft||{}):it;draft=null;
+  const d=isNew?(draft||{}):it;draft=null;fImgs=[...(d.imgs||[])];
   const subSel=allSubs().map(x=>`<option value="${x.sub.id}"${x.sub.id===sid?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("");
   $("#app").innerHTML=`<div class="wrap">
 <div class="bar"><a href="${isNew?"#/t/"+sid:"#/f/"+sid+"/"+iid}" class="back">${ic("back")}Annuler</a></div>
@@ -413,21 +526,29 @@ function editPage(sid,iid){
 <div class="g3" style="grid-template-columns:1fr 1fr"><div><label class="lbl" for="fP">Page / minutage</label><input id="fP" value="${esc(d.page||"")}" placeholder="p. 112 ou 23:40"></div>
 <div><label class="lbl" for="fV">Vérifié le</label><input id="fV" type="date" value="${esc(d.verified||"")}"></div></div>
 <label class="lbl" for="fU">Lien (page, vidéo YouTube, image)</label><input id="fU" type="url" value="${esc(d.url||"")}" placeholder="https://…">
+<label class="lbl">Images (photo, capture, graphique)</label><div id="fI" class="imgs"></div><button type="button" class="btn" data-a="addimg" style="margin-top:8px;min-height:44px">${ic("img",18)}Ajouter une image</button>
 <label class="lbl" for="fG">Étiquettes (séparées par des virgules)</label><input id="fG" value="${esc((d.tags||[]).join(", "))}" placeholder="à vérifier, citation">
 <div class="row" style="margin-top:18px"><button type="submit" class="btn pri sp">Enregistrer</button>${isNew?"":`<button type="button" class="btn dg" data-a="delItem" data-s="${sid}" data-i="${iid}">Supprimer</button>`}</div>
 </form></div>`;
   $("#fR").onchange=e=>{$("#fN").hidden=e.target.value!=="__new"};
+  drawFI();
+  if(d.newSrc){
+    const ex=db.sources.find(x=>x.url&&x.url===d.newSrc.url)||db.sources.find(x=>x.id==="s_"+hash32(d.newSrc.title));
+    if(ex)$("#fR").value=ex.id;else{$("#fR").value="__new";$("#fN").hidden=false;$("#fNT").value=d.newSrc.title;$("#fNK").value=d.newSrc.kind}
+  }
   $("#ef").onsubmit=ev=>{
     ev.preventDefault();
     const text=$("#fX").value.trim(),url=$("#fU").value.trim();
     if(!text&&!url){toast("Écris un texte ou colle un lien.");return}
     let src=$("#fR").value;
-    if(src==="__new"){const t=$("#fNT").value.trim();src=t?newSource({title:t,kind:$("#fNK").value}):""}
+    if(src==="__new"){const t=$("#fNT").value.trim();src=t?newSource({title:t,kind:$("#fNK").value,url:(d.newSrc&&d.newSrc.url)||""}):""}
     const tags=[...new Set($("#fG").value.split(",").map(x=>x.trim().replace(/^#/,"")).filter(Boolean))];
-    const vals={type:$("#fT").value,text,cite:$("#fC").value.trim(),src,page:$("#fP").value.trim(),verified:$("#fV").value,url,tags,u:now()};
+    const vals={type:$("#fT").value,text,cite:$("#fC").value.trim(),src,page:$("#fP").value.trim(),verified:$("#fV").value,url,tags,imgs:[...fImgs],u:now()};
+    const removed=isNew?[]:(it.imgs||[]).filter(x=>!fImgs.includes(x));
     const to=$("#fS").value,tf=findSub(to);
     if(isNew)tf.sub.items.unshift(newItem(vals));
     else{Object.assign(it,vals);if(to!==sid){f.sub.items=f.sub.items.filter(x=>x!==it);tf.sub.items.unshift(it)}}
+    dropImgs(removed);
     lsSet("memoLastType",vals.type);if(src)lsSet("memoLastSrcId",src);lsSet("memoLastSub",to);
     save();go(isNew?"#/t/"+to:"#/f/"+to+"/"+it.id);
   };
@@ -483,7 +604,7 @@ function cheat(id){
 <div class="bb noprint"><div><button class="btn" data-a="a6">${ic("print",18)}Cartes A6</button><button class="btn" data-a="a4">${ic("print",18)}PDF</button></div></div></div>`;
   const fl=()=>{
     const v=aq.trim().toLowerCase(),r=all.filter(([i])=>!v||[i.text,i.cite,(i.tags||[]).join(" "),srcLabel(i)].join(" ").toLowerCase().includes(v));
-    $("#al").innerHTML=r.map(([i,sid,lab])=>`<div class="card it"><div class="top">${badge(i.type)}</div><p class="txt">${esc(i.text||i.url)}</p>${i.cite&&i.cite!==i.text?`<p class="cite" style="font-size:15px;color:#C9C6BD">« ${esc(i.cite)} »</p>`:""}${srcLabel(i)||lab?`<div class="src">${esc([lab,srcLabel(i)].filter(Boolean).join(" · "))}</div>`:""}</div>`).join("")||`<p class="mu">${all.length?"Aucune fiche ne correspond.":"Aucune fiche étoilée ici. Touche l’étoile d’une fiche pour la mettre en antisèche."}</p>`;
+    $("#al").innerHTML=r.map(([i,sid,lab])=>`<div class="card it"><div class="top">${badge(i.type)}</div><p class="txt">${esc(i.text||i.url)}</p>${imgsHTML(i,true)}${i.cite&&i.cite!==i.text?`<p class="cite" style="font-size:15px;color:#C9C6BD">« ${esc(i.cite)} »</p>`:""}${srcLabel(i)||lab?`<div class="src">${esc([lab,srcLabel(i)].filter(Boolean).join(" · "))}</div>`:""}</div>`).join("")||`<p class="mu">${all.length?"Aucune fiche ne correspond.":"Aucune fiche étoilée ici. Touche l’étoile d’une fiche pour la mettre en antisèche."}</p>`;
   };
   $("#aq").oninput=e=>{aq=e.target.value;fl()};fl();
 }
@@ -535,12 +656,13 @@ function openSheet(sid){
 <button class="opt" data-o="dict"><span class="ico">${ic("mic")}</span><span><b>Dicter</b><small>Je parle, le texte s’écrit</small></span></button>
 <button class="opt" data-o="paste"><span class="ico">${ic("link")}</span><span><b>Coller un texte ou un lien</b><small>Depuis le presse-papiers</small></span></button>
 <button class="opt" data-o="write"><span class="ico">${ic("edit")}</span><span><b>Écrire une fiche</b><small>Argument, exemple, chiffre, concept</small></span></button>
-<button class="opt" disabled><span class="ico">${ic("img")}</span><span><b>Image ou graphique</b><small>Bientôt</small></span></button></div>`;
+<button class="opt" data-o="img"><span class="ico">${ic("img")}</span><span><b>Image ou graphique</b><small>Photo ou capture, allégée (~200 Ko)</small></span></button></div>`;
   d.onclick=async e=>{
     if(e.target===d){closeSheet();return}
     const b=e.target.closest("[data-o]");if(!b)return;
     const t=$("#shT").value,o=b.dataset.o;lsSet("memoLastSub",t);closeSheet();
     if(o==="photo")pickPhoto(t);
+    else if(o==="img")pickImgs(ids=>{draft={imgs:ids};go("#/e/"+t+"/new")});
     else if(o==="write")go("#/e/"+t+"/new");
     else if(o==="dict"){draft={dict:true};go("#/e/"+t+"/new")}
     else if(o==="paste"){
@@ -576,21 +698,24 @@ document.addEventListener("click",e=>{
   if(a==="sheet")openSheet(sid);
   else if(a==="addTheme"){const n=prompt("Nom du thème (ex. Écologie, Travail…)");if(n&&n.trim()){const t={id:uid(),name:n.trim(),u:now(),subs:[]};db.themes.push(t);save();go("#/h/"+t.id)}}
   else if(a==="renTheme"){const t=db.themes.find(x=>x.id===tid),n=prompt("Nouveau nom",t.name);if(n&&n.trim()){t.name=n.trim();t.u=now();save();themePage(tid)}}
-  else if(a==="delTheme"){const t=db.themes.find(x=>x.id===tid);if(confirm("Supprimer le thème « "+t.name+" », ses sujets et toutes leurs fiches ?")){db.themes=db.themes.filter(x=>x!==t);save();go("#/")}}
+  else if(a==="delTheme"){const t=db.themes.find(x=>x.id===tid);if(confirm("Supprimer le thème « "+t.name+" », ses sujets et toutes leurs fiches ?")){dropImgs(t.subs.flatMap(s=>s.items.flatMap(i=>i.imgs||[])));db.themes=db.themes.filter(x=>x!==t);save();go("#/")}}
   else if(a==="addSub"){const t=db.themes.find(x=>x.id===tid),n=prompt("Nom du sujet (ex. Temps de travail)");if(n&&n.trim()){const s={id:uid(),name:n.trim(),u:now(),items:[]};t.subs.push(s);save();go("#/t/"+s.id)}}
   else if(a==="renSub"){const f=findSub(sid),n=prompt("Nouveau nom",f.sub.name);if(n&&n.trim()){f.sub.name=n.trim();f.sub.u=now();save();subPage(sid)}}
-  else if(a==="delSub"){const f=findSub(sid);if(confirm("Supprimer le sujet « "+f.sub.name+" » et ses "+f.sub.items.length+" fiche(s) ?")){f.theme.subs=f.theme.subs.filter(x=>x!==f.sub);save();go("#/h/"+f.theme.id)}}
+  else if(a==="delSub"){const f=findSub(sid);if(confirm("Supprimer le sujet « "+f.sub.name+" » et ses "+f.sub.items.length+" fiche(s) ?")){dropImgs(f.sub.items.flatMap(i=>i.imgs||[]));f.theme.subs=f.theme.subs.filter(x=>x!==f.sub);save();go("#/h/"+f.theme.id)}}
   else if(a==="flt"){flt=b.dataset.f;subPage(location.hash.split("/")[2])}
   else if(a==="star"||a==="star2"){
     const f=findSub(sid),it=f.sub.items.find(x=>x.id===iid);it.star=it.star?0:1;it.u=now();save();
     if(a==="star2")fiche(sid,iid);else route();
   }
   else if(a==="tag"){go("#/");setTimeout(()=>{const q=$("#q");q.value="#"+tid;q.dispatchEvent(new Event("input"))},0)}
-  else if(a==="delItem"){if(confirm("Supprimer cette fiche ?")){const f=findSub(sid);f.sub.items=f.sub.items.filter(x=>x.id!==iid);save();go("#/t/"+sid)}}
+  else if(a==="delItem"){if(confirm("Supprimer cette fiche ?")){const f=findSub(sid);dropImgs((f.sub.items.find(x=>x.id===iid)||{}).imgs||[]);f.sub.items=f.sub.items.filter(x=>x.id!==iid);save();go("#/t/"+sid)}}
   else if(a==="delSrc"){
     const id=b.dataset.r,n=allSubs().reduce((c,x)=>c+x.sub.items.filter(i=>i.src===id).length,0);
     if(confirm(n?"Supprimer cette source ? Les "+n+" fiche(s) liées resteront, sans source.":"Supprimer cette source ?")){allSubs().forEach(x=>x.sub.items.forEach(i=>{if(i.src===id)i.src=""}));db.sources=db.sources.filter(s=>s.id!==id);save();go("#/s")}
   }
+  else if(a==="addimg")pickImgs(ids=>{fImgs.push(...ids);drawFI()});
+  else if(a==="rmimg"){fImgs=fImgs.filter(x=>x!==iid);drawFI()}
+  else if(a==="zoom"){if(!b.getAttribute("src"))return;const l=document.createElement("div");l.className="lb";l.innerHTML=`<img src="${b.getAttribute("src")}" alt="">`;l.onclick=()=>l.remove();document.body.append(l)}
   else if(a==="share"){
     const f=findSub(sid),it=f.sub.items.find(x=>x.id===iid),txt=[it.text,it.cite&&it.cite!==it.text?"« "+it.cite+" »":"",srcLabel(it)?"— "+srcLabel(it):"",it.url].filter(Boolean).join("\n");
     if(navigator.share)navigator.share({text:txt}).catch(()=>{});
@@ -612,7 +737,9 @@ document.addEventListener("click",e=>{
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&auth)syncNow()});
 addEventListener("online",()=>{if(auth)syncNow()});
 route();
+shareStart();
 if(auth)syncNow();
+setTimeout(gcImgs,8000);
 if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js");
 </script>
 <script src="photo.js"></script>
