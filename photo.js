@@ -1,0 +1,467 @@
+/* ===== Photo annotée : repérer les passages marqués (crayon en marge, soulignement, surligneur) ===== */
+let ocrWorker=null,ocrSay=null,scanBusy=false;
+function pickPhoto(tid){
+  const i=document.createElement("input");i.type="file";i.accept="image/*";i.style.display="none";document.body.append(i);
+  i.onchange=()=>{const f=i.files[0];i.remove();if(f)scanPhoto(f,tid)};i.click();
+}
+async function getOcr(){
+  if(!window.Tesseract){
+    if(ocrSay)ocrSay("Chargement du lecteur de texte (1re fois, ~10 Mo)…");
+    await new Promise((ok,ko)=>{const s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";s.onload=ok;s.onerror=()=>{s.remove();ko(new Error("connexion requise pour la 1re utilisation"))};document.head.append(s)});
+  }
+  if(!ocrWorker)ocrWorker=(async()=>{
+    const w=await Tesseract.createWorker("fra",1,{logger:m=>{if(m.status==="recognizing text"&&ocrSay)ocrSay("Lecture de la page… "+Math.round(m.progress*100)+" %")}});
+    await w.setParameters({tessedit_pageseg_mode:"3"});
+    return w;
+  })();
+  try{return await ocrWorker}catch(e){ocrWorker=null;throw e}
+}
+const med=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2};
+function maxF(a,w,h,r){const o=new Float32Array(a.length);for(let y=0;y<h;y++)for(let x=0;x<w;x++){let m=0;for(let dy=-r;dy<=r;dy++){const yy=Math.min(h-1,Math.max(0,y+dy));for(let dx=-r;dx<=r;dx++){const v=a[yy*w+Math.min(w-1,Math.max(0,x+dx))];if(v>m)m=v}}o[y*w+x]=m}return o}
+function blurF(a,w,h,r){const t=new Float32Array(a.length),o=new Float32Array(a.length);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){let s=0;for(let d=-r;d<=r;d++)s+=a[y*w+Math.min(w-1,Math.max(0,x+d))];t[y*w+x]=s/(2*r+1)}
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){let s=0;for(let d=-r;d<=r;d++)s+=t[Math.min(h-1,Math.max(0,y+d))*w+x];o[y*w+x]=s/(2*r+1)}
+  return o}
+// luminosité rapportée au fond du papier (0 = noir, 1 = papier) : supprime ombres et éclairage inégal
+function normImg(px,W,H){
+  const N=W*H,g=new Float32Array(N);
+  for(let i=0;i<N;i++)g[i]=0.299*px[i*4]+0.587*px[i*4+1]+0.114*px[i*4+2];
+  const f=8,sw=Math.ceil(W/f),sh=Math.ceil(H/f);let m=new Float32Array(sw*sh);
+  for(let y=0;y<H;y++){const r=((y/f)|0)*sw;for(let x=0;x<W;x++){const k=r+((x/f)|0);if(g[y*W+x]>m[k])m[k]=g[y*W+x]}}
+  m=blurF(blurF(maxF(m,sw,sh,1),sw,sh,2),sw,sh,2);
+  const n=new Float32Array(N);
+  for(let y=0;y<H;y++){
+    const fy=Math.max(0,Math.min(sh-1,(y+.5)/f-.5)),y0=fy|0,y1=Math.min(sh-1,y0+1),ty=fy-y0;
+    for(let x=0;x<W;x++){
+      const fx=Math.max(0,Math.min(sw-1,(x+.5)/f-.5)),x0=fx|0,x1=Math.min(sw-1,x0+1),tx=fx-x0;
+      const b=(m[y0*sw+x0]*(1-tx)+m[y0*sw+x1]*tx)*(1-ty)+(m[y1*sw+x0]*(1-tx)+m[y1*sw+x1]*tx)*ty;
+      n[y*W+x]=Math.min(1,g[y*W+x]/Math.max(b,8));
+    }
+  }
+  n.lm=boxMean(n,W,H,7);
+  return n;
+}
+function boxMean(a,W,H,r){
+  const I=new Float32Array((W+1)*(H+1)),o=new Float32Array(W*H);
+  for(let y=0;y<H;y++){let s=0;for(let x=0;x<W;x++){s+=a[y*W+x];I[(y+1)*(W+1)+x+1]=I[y*(W+1)+x+1]+s}}
+  for(let y=0;y<H;y++){const y0=Math.max(0,y-r),y1=Math.min(H,y+r+1);for(let x=0;x<W;x++){const x0=Math.max(0,x-r),x1=Math.min(W,x+r+1);
+    o[y*W+x]=(I[y1*(W+1)+x1]-I[y0*(W+1)+x1]-I[y1*(W+1)+x0]+I[y0*(W+1)+x0])/((y1-y0)*(x1-x0))}}
+  return o;
+}
+// composantes connexes avec tolérance (tx, ty pixels d'écart)
+function cc(mk,w,h,tx,ty){
+  const lab=new Int32Array(w*h).fill(-1),out=[],q=[];
+  for(let s=0;s<mk.length;s++){
+    if(!mk[s]||lab[s]>=0)continue;
+    const c={x0:1e9,y0:1e9,x1:-1,y1:-1,n:0,p:[]};lab[s]=out.length;q.length=0;q.push(s);
+    while(q.length){const p=q.pop(),y=(p/w)|0,x=p-y*w;c.n++;c.p.push(p);
+      if(x<c.x0)c.x0=x;if(x>c.x1)c.x1=x;if(y<c.y0)c.y0=y;if(y>c.y1)c.y1=y;
+      for(let dy=-ty;dy<=ty;dy++){const yy=y+dy;if(yy<0||yy>=h)continue;
+        for(let dx=-tx;dx<=tx;dx++){const xx=x+dx;if(xx<0||xx>=w)continue;const k=yy*w+xx;if(mk[k]&&lab[k]<0){lab[k]=out.length;q.push(k)}}}}
+    out.push(c);
+  }
+  return out;
+}
+const NOISE=/^[|¦!lI1()[\]{}\/\\'’‘"“”«»:;,.\-–—_~*°]+$/;
+const ENDS=/[.!?…]["»”’)\]]*$/,ABBR=/^(M|MM|Mme|Mlle|Dr|St|Ste|p|pp|cf|ex|vol|chap|fig|art|av|apr|env|n°)\.$/i;
+function ocrLines(data){
+  const out=[];let par=0;
+  const add=(l,p)=>{
+    const ws=(l.words||[]).filter(w=>w.text&&w.text.trim()).map(w=>({t:w.text.trim(),c:w.confidence,x0:w.bbox.x0,y0:w.bbox.y0,x1:w.bbox.x1,y1:w.bbox.y1,m:0}));
+    if(!ws.length)return;const b=l.baseline;
+    out.push({ws,par:p,bl:b&&b.has_baseline!==false&&b.x1>b.x0?b:null,x0:l.bbox.x0,y0:l.bbox.y0,x1:l.bbox.x1,y1:l.bbox.y1});
+  };
+  if(data.blocks&&data.blocks.length){for(const b of data.blocks)for(const p of b.paragraphs||[]){par++;for(const l of p.lines||[])add(l,par)}}
+  else for(const l of data.lines||[])add(l,++par);
+  return out;
+}
+const slopeOf=L=>L.bl?(L.bl.y1-L.bl.y0)/(L.bl.x1-L.bl.x0):0;
+const baseY=(L,x)=>L.bl?L.bl.y0+slopeOf(L)*(x-L.bl.x0):L.y1-0.22*(L.y1-L.y0);
+const lineConf=L=>L.ws.reduce((s,w)=>s+w.c,0)/L.ws.length;
+function fitBox(L){L.x0=Math.min(...L.ws.map(w=>w.x0));L.x1=Math.max(...L.ws.map(w=>w.x1));L.y0=Math.min(...L.ws.map(w=>w.y0));L.y1=Math.max(...L.ws.map(w=>w.y1))}
+// retire les traits de crayon lus comme « | », « l », « ) »… en bout de ligne
+function cleanLines(lines){
+  const lh=1.2*(med(lines.filter(L=>L.ws.length>=3).map(L=>L.y1-L.y0))||20);
+  for(const L of lines){
+    const ws=L.ws,far=(a,b)=>a.x0-b.x1>0.35*lh;
+    while(ws.length>1&&NOISE.test(ws[ws.length-1].t)&&(far(ws[ws.length-1],ws[ws.length-2])||ws[ws.length-1].c<55))ws.pop();
+    while(ws.length>1&&NOISE.test(ws[0].t)&&(far(ws[1],ws[0])||ws[0].c<55))ws.shift();
+    for(const w of ws)w.t=w.t.replace(/[|¦]/g,"");
+    L.ws=ws.filter(w=>w.t);
+    if(L.ws.every(w=>NOISE.test(w.t)))L.ws=[];
+    if(L.ws.length)fitBox(L);
+  }
+  // une ligne qui enjambe la reliure (fin de la page voisine + début de la ligne) est coupée en deux
+  const out=[];
+  for(const L of lines){
+    if(!L.ws.length)continue;
+    let cur={...L,ws:[L.ws[0]]};out.push(cur);
+    for(let i=1;i<L.ws.length;i++){if(L.ws[i].x0-L.ws[i-1].x1>1.2*lh){cur.cut=1;cur={...L,ws:[],cut:1};out.push(cur)}cur.ws.push(L.ws[i])}
+  }
+  for(const L of out){fitBox(L);fixBase(L)}
+  return out.filter(L=>lineConf(L)>=40);
+}
+// ligne de base cohérente avec le bas des mots (celle d'une ligne coupée à la reliure ne vaut rien)
+function fixBase(L,force){
+  const pts=L.ws.map(w=>[(w.x0+w.x1)/2,w.y1]),h=med(L.ws.map(w=>w.y1-w.y0))||1;
+  // pente robuste (médiane des pentes entre mots) et hauteur médiane : les jambages (p, q, g) ne faussent pas la ligne
+  const sl=[];for(let i=0;i<pts.length;i++)for(let j=i+1;j<pts.length;j++){const dx=pts[j][0]-pts[i][0];if(Math.abs(dx)>h)sl.push((pts[j][1]-pts[i][1])/dx)}
+  let s=sl.length?med(sl):0;if(Math.abs(s)>0.2)s=0;
+  if(!force&&L.bl&&!L.cut&&Math.abs(slopeOf(L))<0.2&&(sl.length<3||Math.abs(slopeOf(L)-s)<0.012)&&Math.abs(med(pts.map(([x,y])=>y-baseY(L,x))))<0.3*h)return;
+  if(sl.length<3&&L.bl&&!L.cut&&Math.abs(slopeOf(L))<0.2)s=slopeOf(L);
+  const o=med(pts.map(([x,y])=>y-s*x));
+  L.bl={x0:L.x0,y0:o+s*L.x0,x1:L.x1,y1:o+s*L.x1};
+}
+function edgeVal(v,dir,lh){
+  const s=[...v].sort((a,b)=>dir<0?b-a:a-b),need=Math.min(3,s.length);
+  for(let i=0;i<s.length;i++){const g=s.filter(x=>Math.abs(x-s[i])<=0.4*lh);if(g.length>=need)return med(g)}
+  return s[0];
+}
+function colGeom(C){
+  // recoller les morceaux d'une même ligne (photo penchée : la lecture coupe parfois une ligne en deux)
+  {const hm0=med(C.lines.map(l=>l.y1-l.y0))*1.2,sc=med(C.lines.filter(l=>l.ws.length>=4&&l.bl).map(slopeOf))||0,rows=[];
+    const yr=l=>{const xc=(l.x0+l.x1)/2;return baseY(l,xc)-sc*xc};
+    for(const l of[...C.lines].sort((a,b)=>yr(a)-yr(b))){
+      const r=!l.cut&&rows.find(r=>!r.cut&&Math.abs(r.yr-yr(l))<0.35*hm0&&r.ps.every(o=>Math.min(o.x1,l.x1)-Math.max(o.x0,l.x0)<0.3*Math.min(o.x1-o.x0,l.x1-l.x0)));
+      if(r)r.ps.push(l);else rows.push({yr:yr(l),ps:[l],cut:l.cut});
+    }
+    C.lines=rows.map(r=>{
+      if(r.ps.length===1)return r.ps[0];
+      r.ps.sort((a,b)=>a.x0-b.x0);const m=r.ps[0];
+      for(const l of r.ps.slice(1)){
+        const a=m.ws[m.ws.length-1],b=l.ws[0];
+        if(b.x0-a.x1<0.12*hm0){a.t+=b.t;a.x1=b.x1;a.y0=Math.min(a.y0,b.y0);a.y1=Math.max(a.y1,b.y1);a.m=a.m||b.m;m.ws=m.ws.concat(l.ws.slice(1))} // mot coupé en deux morceaux
+        else m.ws=m.ws.concat(l.ws);
+      }
+      fitBox(m);fixBase(m,1);return m;
+    });}
+  const L=C.lines;
+  const sl=L.filter(l=>l.ws.length>=4&&l.bl).map(slopeOf);C.b=-(sl.length?med(sl):0);
+  for(const l of L)l.yc=baseY(l,(l.x0+l.x1)/2);
+  L.sort((a,b)=>a.yc-b.yc);
+  const hm=med(L.map(l=>l.y1-l.y0)),d=[];
+  for(let i=1;i<L.length;i++){const v=L[i].yc-L[i-1].yc;if(v>0.6*hm&&v<2.2*hm)d.push(v)}
+  C.lh=d.length?med(d):1.25*hm;
+  // bords du bloc de texte, d'après les vrais mots (un trait lu comme « \ » ou « a » ne compte pas)
+  const wordy=w=>/[A-Za-zÀ-ÖØ-öø-ÿ0-9]{2,}/.test(w.t);
+  const e1=l=>{for(let i=l.ws.length-1;i>=0;i--)if(wordy(l.ws[i]))return l.ws[i].x1;return l.x1};
+  const e0=l=>{for(const w of l.ws)if(wordy(w))return w.x0;return l.x0};
+  C.R=edgeVal(L.map(l=>e1(l)-C.b*baseY(l,e1(l))),-1,C.lh);
+  C.Lf=edgeVal(L.map(l=>e0(l)-C.b*baseY(l,e0(l))),1,C.lh);
+  // ce qui dépasse nettement des bords (traits, notes de marge) n'est pas du texte du livre
+  for(const l of L){const r=C.R+C.b*l.yc+0.3*C.lh,f=C.Lf+C.b*l.yc-0.3*C.lh;l.ws=l.ws.filter(w=>w.x0<=r&&w.x1>=f);if(l.ws.length)fitBox(l)}
+  C.lines=L.filter(l=>l.ws.length);
+  C.top=Math.min(...C.lines.map(l=>l.y0));C.bot=Math.max(...C.lines.map(l=>l.y1));C.marks=[];
+  return C;
+}
+// colonnes de texte (une ou deux pages visibles)
+function findCols(lines){
+  let good=lines.filter(L=>L.ws.length>=3&&lineConf(L)>=65);
+  if(good.length<2)good=lines.filter(L=>L.ws.length>=2);
+  if(!good.length)return[];
+  const wm=med(good.map(L=>L.x1-L.x0));
+  good.sort((a,b)=>(a.x0+a.x1)-(b.x0+b.x1));
+  const gr=[[good[0]]];
+  for(let i=1;i<good.length;i++){if((good[i].x0+good[i].x1-good[i-1].x0-good[i-1].x1)/2>0.45*wm)gr.push([]);gr[gr.length-1].push(good[i])}
+  const big=Math.max(...gr.map(g=>g.length));
+  const cols=gr.filter(g=>g.length>=Math.max(2,0.3*big)).map(g=>{
+    const a=g.map(L=>L.x0).sort((p,q)=>p-q),b=g.map(L=>L.x1).sort((p,q)=>p-q);
+    return{x0:a[Math.floor(0.1*(a.length-1))],x1:b[Math.ceil(0.9*(b.length-1))],lines:[]}});
+  for(const L of lines){let best=null,bo=0;for(const C of cols){const o=Math.min(L.x1,C.x1)-Math.max(L.x0,C.x0);if(o>bo){bo=o;best=C}}if(best&&bo>=0.5*(L.x1-L.x0))best.lines.push(L)}
+  return cols.filter(C=>C.lines.length).map(colGeom);
+}
+// traits verticaux (crayon, stylo, crochets) dans la marge droite (side=1) ou gauche (side=-1)
+function marginMarks(n,px,W,H,C,side){
+  const lh=C.lh,E=side>0?C.R:C.Lf,ex=y=>E+C.b*y;
+  const yA=Math.max(0,Math.round(C.top-0.5*lh)),yB=Math.min(H-1,Math.round(C.bot+0.5*lh));
+  const dMin=Math.max(2,Math.round(0.2*lh)),dMax=Math.round(1.9*lh),bw=dMax-dMin+1,bh=yB-yA+1;
+  if(bh<2)return[];
+  const mk=new Uint8Array(bw*bh),nv=new Float32Array(bw*bh).fill(1);
+  for(let r=0;r<bh;r++){const y=yA+r,e=ex(y);for(let k=0;k<bw;k++){const x=Math.round(e+side*(dMin+k));if(x<0||x>=W)continue;const v=n[y*W+x];nv[r*bw+k]=v;if(v<0.86&&v<n.lm[y*W+x]-0.05)mk[r*bw+k]=1}}
+  const fr=[],fp=new Uint8Array(bw*bh);
+  for(const c of cc(mk,bw,bh,1,3)){
+    const h=c.y1-c.y0+1,w=c.x1-c.x0+1;
+    let s=0,mn=1;for(const p of c.p){s+=nv[p];if(nv[p]<mn)mn=nv[p]}
+    const y0=yA+c.y0,y1=yA+c.y1,x=ex((y0+y1)/2)+side*(dMin+(c.x0+c.x1)/2);
+    if(h<0.25*lh||c.n/h>0.3*lh||w>0.5*h+0.3*lh)continue;
+    if(s/c.n>0.82||mn>0.74)continue;
+    if(C.lines.some(L=>L.ws.some(wd=>wd.y1>y0&&wd.y0<y1&&x>=wd.x0-2&&x<=wd.x1+2)))continue;
+    const pts=[];for(const p of c.p){fp[p]=1;const r=(p/bw)|0,yy=yA+r,xx=Math.round(ex(yy)+side*(dMin+p-r*bw));if(xx>=0&&xx<W)pts.push(yy*W+xx)}
+    fr.push({y0,y1,k:(c.x0+c.x1)/2,x,pts,sg:[[y0,y1]]});
+  }
+  const gly=[];for(const c of cc(mk,bw,bh,1,1)){const h=c.y1-c.y0+1,w=c.x1-c.x0+1;if(h<0.25*lh||h>1.3*lh||w>1.5*h||c.p.some(p=>fp[p]))continue;let s=0;for(const p of c.p)s+=nv[p];if(s/c.n<0.75)gly.push((c.y0+c.y1)/2)}
+  fr.sort((a,b)=>a.y0-b.y0);
+  const ch=[];
+  for(const f of fr){const c=ch.find(c=>f.y0-c.y1<=0.6*lh&&Math.abs(f.k-c.k)<=0.35*lh);
+    if(c){c.y1=Math.max(c.y1,f.y1);c.k=(c.k+f.k)/2;c.x=(c.x+f.x)/2;c.pts=c.pts.concat(f.pts);c.sg=c.sg.concat(f.sg)}else ch.push({...f})}
+  // un vrai trait est isolé : autour, du papier (sinon c'est le texte de la page voisine ou l'ombre de la reliure)
+  const sat=i=>{const r=px[i*4],g=px[i*4+1],b=px[i*4+2];return(Math.max(r,g,b)-Math.min(r,g,b))/255};
+  const pv=[];for(let r=0;r<bh;r+=4)for(let k=0;k<bw;k+=4)if(nv[r*bw+k]>0.92){const y=yA+r,x=Math.round(ex(y)+side*(dMin+k));if(x>=0&&x<W)pv.push(sat(y*W+x))}
+  const ps=pv.length?med(pv):0.1;
+  return ch.filter(c=>{
+    if(c.y1-c.y0<lh)return false;
+    // un trait est continu ; des bouts de lettres empilés (bord de la page voisine) laissent des trous à chaque interligne
+    let cov=0,end=-1;for(const[a,b]of c.sg.sort((p,q)=>p[0]-q[0])){const s0=Math.max(a,end+1);if(b>=s0)cov+=b-s0+1;end=Math.max(end,b)}
+    const lng=Math.max(...c.sg.map(([a,b])=>b-a+1));
+    if(cov<0.8*(c.y1-c.y0+1)||lng<0.5*(c.y1-c.y0+1)||lng<0.9*lh)return false;
+    if(gly.filter(r=>r>=c.y0-yA-lh&&r<=c.y1-yA+lh).length>1.2*(c.y1-c.y0+2*lh)/lh)return false; // entouré de lettres
+    // entre le texte et le trait : rien que du papier (sinon le « trait » est au-delà de la reliure, sur l'autre page)
+    let blk=0,tot=0;const kc=Math.round(c.k-0.15*lh);
+    for(let r=c.y0-yA;r<=c.y1-yA;r+=2){tot++;for(let k=0;k<kc;k++){const p=r*bw+k;if(mk[p]&&!fp[p]){blk++;break}}}
+    if(blk>0.2*tot)return false;
+    let ss=0;for(const i of c.pts)ss+=sat(i);if(ss/c.pts.length>ps+0.08)return false;
+    const r0=c.y0-yA,r1=c.y1-yA,k0=Math.max(0,Math.round(c.k-0.7*lh)),k1=Math.min(bw-1,Math.round(c.k+0.7*lh));let o=0;
+    for(let r=r0;r<=r1;r++)for(let k=k0;k<=k1;k++){const p=r*bw+k;if(mk[p]&&!fp[p])o++}
+    if(o>0.05*(r1-r0+1)*(k1-k0+1))return false;
+    // du papier clair des deux côtés (sinon c'est un bord de page ou la reliure, pas un trait)
+    const gl=[],gr=[],off=Math.max(4,Math.round(0.3*lh)),nn=(x,y)=>{x=Math.round(x);return x<0||x>=W?-1:n[y*W+x]};
+    for(let y=c.y0;y<=c.y1;y+=3){const xc=ex(y)+side*(dMin+c.k),a=nn(xc-off,y),b=nn(xc+off,y);if(a>=0&&b>=0){gl.push(a);gr.push(b)}}
+    const ml=med(gl),mr=med(gr);
+    return gl.length&&Math.abs(ml-mr)<=0.1&&Math.min(ml,mr)>=0.85;
+  });
+}
+function applyMargin(C,marks,side){
+  const gr=[];for(const m of [...marks].sort((a,b)=>a.y0-b.y0)){const g=gr.find(g=>m.y0<=g.y1&&m.y1>=g.y0);if(g){g.y1=Math.max(g.y1,m.y1);m.g=g}else{const h={y0:m.y0,y1:m.y1};gr.push(h);m.g=h}}
+  for(const m of marks)for(const L of C.lines){
+    const yb=baseY(L,m.x);
+    if(m.y0<=yb-0.3*C.lh&&m.y1>=yb-0.15*C.lh){m.used=1;for(const w of L.ws){w.m=1;if(!w.g)w.g=m.g}}
+  }
+}
+// soulignements sous la ligne de base
+function underMarks(n,W,H,C){
+  const lh=C.lh;
+  for(const L of C.lines){
+    if(lineConf(L)<60)continue;
+    // bas réel des lettres : la bande de recherche commence juste en dessous (sinon les empattements ressemblent à un trait)
+    const dA=-Math.round(0.4*lh),dB=Math.round(0.5*lh),prof=[];
+    for(let d=dA;d<=dB;d++){let c=0,t=0;for(let x=Math.round(L.x0);x<=L.x1;x+=2){const y=Math.round(baseY(L,x)+d);if(y<0||y>=H)continue;t++;if(n[y*W+x]<0.5)c++}prof.push(t?c/t:0)}
+    const body=Math.max(...prof.slice(0,-dA));let d0=-1;
+    for(let d=0;d<=dB;d++)if(prof[d-dA]<0.25*body){d0=d+1;break}
+    if(d0<0||d0>0.25*lh)continue; // géométrie de ligne douteuse
+    const below=C.lines.filter(o=>o!==L&&o.yc>L.yc&&o.yc-L.yc<1.6*lh).map(o=>{const v=o.ws.map(w=>baseY(o,(w.x0+w.x1)/2)-w.y0).sort((p,q)=>p-q);return{o,a:v[Math.floor(0.8*(v.length-1))]}});
+    const xa=Math.max(0,Math.round(L.x0-0.1*lh)),xb=Math.min(W-1,Math.round(L.x1+0.1*lh)),d1=Math.round(0.42*lh),sw=xb-xa+1,sh=d1-d0+1;
+    if(sw<2||sh<2)continue;
+    const mk=new Uint8Array(sw*sh),nv=new Float32Array(sw*sh).fill(1);
+    for(let k=0;k<sw;k++){
+      const x=xa+k,yb=baseY(L,x);let lim=d1;
+      for(const{o,a}of below)if(x>=o.x0&&x<=o.x1)lim=Math.min(lim,Math.floor(baseY(o,x)-a-yb)-2); // ne pas descendre dans la ligne suivante
+      for(let r=0;r<sh&&d0+r<=lim;r++){const y=Math.round(yb+d0+r);if(y<0||y>=H)continue;const v=n[y*W+x];nv[r*sw+k]=v;if(v<0.84&&v<n.lm[y*W+x]-0.05)mk[r*sw+k]=1}
+    }
+    for(const c of cc(mk,sw,sh,3,1)){
+      const w=c.x1-c.x0+1,h=c.y1-c.y0+1;
+      if(w<1.4*lh||w<3*h||c.n/w>0.22*lh)continue;
+      const cn=new Uint16Array(w);let s=0,mn=1;
+      for(const p of c.p){cn[p%sw-c.x0]++;s+=nv[p];if(nv[p]<mn)mn=nv[p]}
+      const nz=[...cn].filter(v=>v),mth=med(nz),mean=s/c.n;
+      if(nz.length<0.8*w||mth>Math.max(3,0.1*lh)||mn>0.68)continue; // trait continu et fin, pas un reflet du verso
+      if(mean<0.45&&w>0.8*(C.R-C.Lf))continue; // filet imprimé
+      if(mean<0.5&&(mth>Math.max(3,0.08*lh)||w<2*lh))continue; // trop sombre : du texte imprimé, sauf trait de stylo long et fin
+      if(mean>0.76)continue;
+      const u0=xa+c.x0,u1=xa+c.x1,xm=(u0+u1)/2,ym=baseY(L,xm)+d0+(c.y0+c.y1)/2;
+      if(C.lines.some(o=>o!==L&&xm>=o.x0&&xm<=o.x1&&ym>baseY(o,xm)-0.55*lh&&ym<baseY(o,xm)+0.05*lh))continue; // dans une autre ligne
+      const g={};for(const wd of L.ws)if(Math.min(u1,wd.x1)-Math.max(u0,wd.x0)>0.5*(wd.x1-wd.x0)){wd.m=1;if(!wd.g)wd.g=g}
+    }
+  }
+}
+// surligneur : mots sur fond nettement plus coloré que le papier
+function hiMarks(px,n,W,C){
+  const v=[];
+  for(let y=Math.round(C.top);y<C.bot;y+=6){const a=Math.max(0,Math.round(C.Lf+C.b*y)),b=Math.min(W-1,Math.round(C.R+C.b*y));
+    for(let x=a;x<b;x+=6){const i=y*W+x;if(n[i]<0.92)continue;const r=px[i*4],g=px[i*4+1],bl=px[i*4+2],mx=Math.max(r,g,bl);if(mx)v.push((mx-Math.min(r,g,bl))/mx)}}
+  const ps=v.length?med(v):0.1;
+  for(const L of C.lines)for(const w of L.ws){let k=0,t=0;
+    for(let y=w.y0;y<=w.y1;y+=2)for(let x=w.x0;x<=w.x1;x+=2){const i=(y*W+x)*4,r=px[i],g=px[i+1],b=px[i+2],mx=Math.max(r,g,b);t++;if(mx>=90&&(mx-Math.min(r,g,b))/mx>=ps+0.18)k++}
+    if(t&&k/t>=0.3){w.m=1;if(!w.g)w.g=L}}
+}
+// phrases complètes contenant au moins un mot marqué, regroupées en passages
+function buildPassages(cols){
+  const out=[];
+  for(const C of [...cols].sort((a,b)=>a.x0-b.x0)){
+    const lh=C.lh,paras=[];let cur=null,prev=null,pass=null;
+    for(const l of C.lines){
+      let brk=!cur;
+      if(!brk){
+        const pe=ENDS.test(prev.ws[prev.ws.length-1].t),short=prev.x1<C.R+C.b*baseY(prev,prev.x1)-1.2*lh,ind=l.x0-(C.Lf+C.b*l.yc);
+        brk=l.yc-prev.yc>1.6*lh||short||(pe&&(ind>0.8*lh||l.par!==prev.par));
+      }
+      if(brk){cur=[];paras.push(cur)}
+      cur.push(l);prev=l;
+    }
+    for(const p of paras){
+      let text="";const ws=[];
+      p.forEach(l=>l.ws.forEach((w,j)=>{
+        if(text){if(j===0&&/[-‐]$/.test(text)&&/^[a-zà-ÿœæ]/.test(w.t))text=text.slice(0,-1);else text+=" "}
+        ws.push({w,l,s:text.length});text+=w.t;ws[ws.length-1].e=text.length;
+      }));
+      let st=0;
+      for(let i=0;i<ws.length;i++){
+        const nx=ws[i+1];
+        if(nx&&!(ENDS.test(ws[i].w.t)&&!ABBR.test(ws[i].w.t)&&/^[«"“(\[—–A-ZÀ-ÖØ-Þ0-9]/.test(nx.w.t)))continue;
+        const seg=ws.slice(st,i+1),t=text.slice(seg[0].s,seg[seg.length-1].e);st=i+1;
+        if(!seg.some(r=>r.w.m)){pass=null;continue}
+        const gs=new Set(seg.filter(r=>r.w.m).map(r=>r.w.g));
+        if(pass&&pass.p!==p&&![...gs].some(g=>pass.g.has(g)))pass=null; // autre paragraphe, autre marque : nouveau passage
+        if(!pass){pass={parts:[],lines:new Set(),p:null};out.push(pass)}
+        pass.parts.push((pass.p===p?" ":pass.parts.length?"\n":"")+t);pass.p=p;pass.g=gs;seg.forEach(r=>pass.lines.add(r.l));
+      }
+    }
+  }
+  return out.map(p=>({text:p.parts.join(""),lines:p.lines}));
+}
+// numéro de page : nombre isolé en haut près d'un bord (pas un numéro de chapitre centré), sinon en bas
+function pageNum(cols){
+  let bas="";
+  for(const L of[...(cols.raw||[]),...cols.flatMap(c=>c.lines)])for(const[i,w]of L.ws.entries()){
+    if(!/^\d{1,4}$/.test(w.t)||w.c<60)continue;
+    const p=L.ws[i-1],q=L.ws[i+1],g=cols[0].lh*1.5;
+    if((p&&w.x0-p.x1<g)||(q&&q.x0-w.x1<g))continue; // un numéro de page est isolé (sinon c'est un chiffre du texte)
+    const xc=(w.x0+w.x1)/2,yc=(w.y0+w.y1)/2;
+    for(const C of cols){
+      const l=C.Lf+C.b*yc,r=C.R+C.b*yc,lh=C.lh;
+      if(xc<l-lh||xc>r+lh)continue;
+      if(yc<C.lines[0].yc-0.3*lh&&yc>C.top-4*lh&&(Math.abs(xc-l)<2*lh||Math.abs(xc-r)<2*lh))return w.t;
+      if(yc>C.bot-1.5*lh&&yc<C.bot+4*lh)bas=w.t;
+    }
+  }
+  return bas;
+}
+function grayCanvas(n,W,H,x0,y0,w,h,keep){
+  const oc=document.createElement("canvas");oc.width=w;oc.height=h;
+  const ox=oc.getContext("2d"),od=ox.createImageData(w,h);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){const X=x0+x,Y=y0+y,i=(y*w+x)*4;let v=255;
+    if(X>=0&&Y>=0&&X<W&&Y<H&&(!keep||keep(X,Y)))v=Math.max(0,Math.min(255,(n[Y*W+X]-0.1)*311));
+    od.data[i]=od.data[i+1]=od.data[i+2]=v;od.data[i+3]=255}
+  ox.putImageData(od,0,0);return oc;
+}
+function moveLines(lines,s,dx,dy){
+  const f=o=>{o.x0=o.x0*s+dx;o.x1=o.x1*s+dx;o.y0=o.y0*s+dy;o.y1=o.y1*s+dy};
+  for(const L of lines){f(L);L.ws.forEach(f);if(L.bl)f(L.bl)}
+  return lines;
+}
+async function ocrRun(wk,canvas,psm,raw){
+  await wk.setParameters({tessedit_pageseg_mode:String(psm)});
+  const {data}=await wk.recognize(canvas,{},{blocks:true,text:true});
+  if(raw)raw.push(...ocrLines(data));
+  return cleanLines(ocrLines(data));
+}
+// texte d'une autre page juste à côté de la colonne : cette marge n'est pas exploitable (reliure, page voisine)
+function crowded(C,raw,side){
+  const lh=C.lh;
+  return raw.some(L=>{
+    const ws=L.ws.filter(w=>/[A-Za-zÀ-ÖØ-öø-ÿ]{2,}/.test(w.t));if(ws.length<2)return false;
+    const x0=Math.min(...ws.map(w=>w.x0)),x1=Math.max(...ws.map(w=>w.x1)),yc=(L.y0+L.y1)/2;
+    if(yc<C.top||yc>C.bot)return false;
+    const e=(side>0?C.R:C.Lf)+C.b*yc;
+    return side>0?x0>=e-0.3*lh&&x0<=e+3*lh&&x1>e+lh:x1<=e+0.3*lh&&x1>=e-3*lh&&x0<e-lh;
+  });
+}
+// 1) repérer la colonne de texte sur l'image réduite ; 2) relire la colonne seule, traits de marge effacés (ils gênent la lecture)
+async function analyze(px,W,H,wk,say){
+  const n=normImg(px,W,H);
+  say("Lecture de la page…");
+  const full=grayCanvas(n,W,H,0,0,W,H,null),s1=Math.min(1,1600/Math.max(W,H));
+  let p1=full;
+  if(s1<1){p1=document.createElement("canvas");p1.width=Math.round(W*s1);p1.height=Math.round(H*s1);p1.getContext("2d").drawImage(full,0,0,p1.width,p1.height)}
+  let raw=[],cols=findCols(moveLines(await ocrRun(wk,p1,3,raw),1/s1,0,0));moveLines(raw,1/s1,0,0);
+  if(!cols.length&&s1<1){raw=[];cols=findCols(await ocrRun(wk,full,3,raw))}
+  const out=[];
+  for(const C of cols.slice(0,2)){
+    say("Lecture fine de la page…");
+    const lh=C.lh,er=new Uint8Array(W*H);
+    for(const side of[1,-1])if(!crowded(C,raw,side))for(const m of marginMarks(n,px,W,H,C,side))for(const p of m.pts){const y=(p/W)|0,x=p-y*W;
+      for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const yy=y+dy,xx=x+dx;if(yy>=0&&yy<H&&xx>=0&&xx<W)er[yy*W+xx]=1}}
+    const yT=Math.max(0,Math.floor(C.top-1.5*lh)),yB=Math.min(H,Math.ceil(C.bot+1.5*lh)),xl=y=>C.Lf+C.b*y-0.5*lh,xr=y=>C.R+C.b*y+0.5*lh;
+    const x0=Math.max(0,Math.floor(Math.min(xl(yT),xl(yB)))),x1=Math.min(W,Math.ceil(Math.max(xr(yT),xr(yB))));
+    if(x1-x0<10||yB-yT<10){out.push(C);continue}
+    const cv=grayCanvas(n,W,H,x0,yT,x1-x0,yB-yT,(X,Y)=>!er[Y*W+X]&&X>=xl(Y)&&X<=xr(Y));
+    const C2=findCols(moveLines(await ocrRun(wk,cv,4),1,x0,yT));
+    out.push(...(C2.length?C2:[C]));
+  }
+  for(const C of out){
+    C.marks=[];
+    for(const side of[1,-1]){if(crowded(C,raw,side))continue;const m=marginMarks(n,px,W,H,C,side);applyMargin(C,m,side);C.marks.push(...m.filter(x=>x.used))}
+    underMarks(n,W,H,C);hiMarks(px,n,W,C);
+  }
+  out.raw=raw;
+  return out;
+}
+async function scanPhoto(file,tid){
+  if(scanBusy)return;scanBusy=true;
+  const say=m=>{const st=$("#st");if(st)st.textContent=m};ocrSay=say;
+  try{
+    say("Analyse de la photo…");
+    const bmp=await createImageBitmap(file);
+    const sc=Math.min(1,2200/Math.max(bmp.width,bmp.height)),W=Math.round(bmp.width*sc),H=Math.round(bmp.height*sc);
+    const cv=document.createElement("canvas");cv.width=W;cv.height=H;
+    const cx=cv.getContext("2d",{willReadFrequently:true});cx.drawImage(bmp,0,0,W,H);if(bmp.close)bmp.close();
+    const px=cx.getImageData(0,0,W,H).data,wk=await getOcr();
+    const cols=await analyze(px,W,H,wk,say);
+    if(!cols.length)throw new Error("texte illisible. Reprends la photo plus nette, page à plat et bien éclairée.");
+    say("");
+    openReview({cv,W,H,cols,page:pageNum(cols)},tid);
+  }catch(e){say("Échec : "+e.message)}
+  finally{scanBusy=false}
+}
+// écran de validation : photo avec lignes repérées (toucher pour ajouter/retirer) + passages modifiables
+function openReview(R,tid){
+  let ps=buildPassages(R.cols);
+  const lh=Math.max(...R.cols.map(C=>C.lh)),all=R.cols.flatMap(C=>C.lines);
+  const vx0=Math.max(0,Math.min(...all.map(l=>l.x0))-2.2*lh),vx1=Math.min(R.W,Math.max(...all.map(l=>l.x1))+2.2*lh);
+  const vy0=Math.max(0,Math.min(...all.map(l=>l.y0))-lh),vy1=Math.min(R.H,Math.max(...all.map(l=>l.y1))+lh);
+  const vw=vx1-vx0,vh=vy1-vy0,k=Math.min(1,1000/vw);
+  const lastT=lsGet("memoLastType")||"arg",lastS=lsGet("memoLastSrcId")||"";
+  const old=document.getElementById("rv");if(old)old.remove();
+  const d=document.createElement("div");d.id="rv";
+  d.innerHTML=`<div class="in"><div class="bar"><button class="btn gh" data-r="close">Annuler</button></div>
+<h1 class="ser" id="rvH"></h1><p class="mu">Touche une ligne sur la photo pour l'ajouter ou la retirer, puis corrige le texte si besoin.</p>
+<canvas id="rvC"></canvas>
+<div class="g3"><div><label class="lbl">Type</label><select id="rvT">${TYPES.map(x=>`<option value="${x[0]}"${x[0]===lastT?" selected":""}>${x[1]}</option>`).join("")}</select></div>
+<div><label class="lbl">Source</label><select id="rvS"><option value="">(aucune)</option>${db.sources.map(s=>`<option value="${s.id}"${s.id===lastS?" selected":""}>${esc(s.title)}</option>`).join("")}<option value="__new">+ Nouvelle source…</option></select></div>
+<div><label class="lbl">Page</label><input id="rvPg" placeholder="n°" inputmode="numeric" value="${esc(R.page)}"></div></div>
+<input id="rvSN" placeholder="Titre de la nouvelle source" hidden>
+<div id="rvP"></div>
+<div class="stick"><button class="btn pri" data-r="ok" id="rvOk">Créer</button></div></div>`;
+  document.body.append(d);document.body.style.overflow="hidden";
+  const c=d.querySelector("#rvC");c.width=Math.round(vw*k);c.height=Math.round(vh*k);const g=c.getContext("2d");
+  const draw=()=>{
+    g.drawImage(R.cv,vx0,vy0,vw,vh,0,0,c.width,c.height);
+    const inP=new Set();ps.forEach(p=>p.lines.forEach(l=>inP.add(l)));
+    for(const C of R.cols){
+      for(const L of C.lines){const on=L.ws.some(w=>w.m);if(!on&&!inP.has(L))continue;
+        const P=(x,d)=>[(x-vx0)*k,(baseY(L,x)+d*C.lh-vy0)*k],q=[P(L.x0,-0.72),P(L.x1,-0.72),P(L.x1,0.22),P(L.x0,0.22)];
+        g.fillStyle=on?"rgba(247,217,76,.55)":"rgba(247,217,76,.25)";
+        g.beginPath();g.moveTo(...q[0]);q.slice(1).forEach(p=>g.lineTo(...p));g.closePath();g.fill()}
+      g.strokeStyle="rgba(31,58,95,.9)";g.lineWidth=3;
+      for(const m of C.marks)g.strokeRect((m.x-vx0)*k-6,(m.y0-vy0)*k,12,(m.y1-m.y0)*k);
+    }
+  };
+  const count=()=>{const nb=d.querySelectorAll("#rvP input:checked").length,b=d.querySelector("#rvOk");b.textContent=nb?"Créer "+nb+" fiche"+(nb>1?"s":""):"Créer";b.disabled=!nb;d.querySelector("#rvH").textContent=ps.length+" passage"+(ps.length>1?"s":"")+" repéré"+(ps.length>1?"s":"")};
+  const list=()=>{
+    d.querySelector("#rvP").innerHTML=ps.length?ps.map((p,i)=>`<div class="card pas"><label class="chk"><input type="checkbox" data-i="${i}" checked><b>Passage ${i+1}</b></label><textarea data-i="${i}" rows="4">${esc(p.text)}</textarea></div>`).join(""):'<p class="mu">Aucune marque repérée : touche les lignes à garder sur la photo.</p>';
+    count();
+  };
+  draw();list();
+  c.onclick=e=>{
+    const r=c.getBoundingClientRect(),x=vx0+(e.clientX-r.left)*vw/r.width,y=vy0+(e.clientY-r.top)*vh/r.height;
+    let best=null,bd=1e9;
+    for(const C of R.cols)for(const L of C.lines){if(x<L.x0-0.3*C.lh||x>L.x1+0.3*C.lh)continue;const dd=Math.abs(y-(baseY(L,x)-0.25*C.lh));if(dd<0.6*C.lh&&dd<bd){bd=dd;best=L}}
+    if(!best)return;const on=best.ws.some(w=>w.m);best.ws.forEach(w=>{w.m=on?0:1;w.g=on?null:"tap"});
+    ps=buildPassages(R.cols);draw();list();
+  };
+  d.onchange=e=>{
+    if(e.target.type==="checkbox")count();
+    if(e.target.id==="rvS"){const n=d.querySelector("#rvSN");n.hidden=e.target.value!=="__new";if(!n.hidden)n.focus()}
+  };
+  d.onclick=e=>{
+    const b=e.target.closest("[data-r]");if(!b)return;
+    if(b.dataset.r==="close"){d.remove();document.body.style.overflow="";return}
+    const f=findSub(tid);if(!f)return;
+    const t=d.querySelector("#rvT").value,pg=d.querySelector("#rvPg").value.trim();
+    let sid=d.querySelector("#rvS").value;
+    if(sid==="__new"){const nt=d.querySelector("#rvSN").value.trim();sid=nt?newSource({title:nt,kind:"Livre"}):""}
+    const texts=[...d.querySelectorAll("#rvP input:checked")].map(i=>d.querySelector(`textarea[data-i="${i.dataset.i}"]`).value.trim()).filter(Boolean);
+    texts.reverse().forEach(tx=>f.sub.items.unshift(newItem({type:t,text:tx,src:sid,page:pg})));
+    lsSet("memoLastType",t);lsSet("memoLastSrcId",sid);
+    save();d.remove();document.body.style.overflow="";go("#/t/"+tid);
+  };
+}
