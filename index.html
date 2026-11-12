@@ -151,7 +151,7 @@ const TYPES=[
  ["con","Contre-argument","#F6E0DE","#7A2620","#4A2623","#F3C9C5"],
  ["src","Source","#E9E9E6","#3A3A36","#2E3440","#D5D8DE"],
  ["note","Note","#ECEAE4","#4A4742","#2E3440","#D5D8DE"]];
-const KINDS=["Livre","Article","Podcast","Vidéo","Site","Autre"];
+const KINDS=["Livre","Article","Podcast","Vidéo","Site","Graphique","Autre"];
 const ICONS={
 grid:'<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
 book:'<path d="M5 4.5h10a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/>',
@@ -611,7 +611,7 @@ ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<button class="c
 <div class="bb"><div><button class="btn hl" data-a="star2" data-s="${sid}" data-i="${iid}">${ic("star",20)}${it.star?"Dans l’antisèche":"Ajouter à l’antisèche"}</button><button class="btn" style="flex:0 0 140px" data-a="share" data-s="${sid}" data-i="${iid}">${ic("share",20)}Partager</button></div></div>`;
 }
 /* ===== Classement automatique (sans IA : mots-clés, même livre, thème du livre) ===== */
-const STOPW=new Set("avec dans pour par sur sous cette cela celui celle ceux elles ils nous vous sont etre avoir fait faire plus moins tres aussi comme mais donc leur leurs entre vers chez sans depuis alors ainsi apres avant dont quand tout tous toute toutes autre autres meme ete etait ont the and that this with from have for are was were their which about into more than temps fois chose choses monde partie facon jour jours annee annees gens personne personnes lorsque lors selon encore toujours jamais devez doivent peuvent peut bien bon bonne quelque quelques plusieurs chaque notre votre vos nos ces ses".split(" "));
+const STOPW=new Set("avec dans pour par sur sous cette cela celui celle ceux elles ils nous vous sont etre avoir fait faire plus moins tres aussi comme mais donc leur leurs entre vers chez sans depuis alors ainsi apres avant dont quand tout tous toute toutes autre autres meme ete etait ont the and that this with from have for are was were their which about into more than temps fois chose choses monde partie facon jour jours annee annees gens personne personnes lorsque lors selon encore toujours jamais devez doivent peuvent peut bien bon bonne quelque quelques plusieurs chaque notre votre vos nos ces ses graphique graphiques image images".split(" "));
 const nm=x=>String(x||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
 const toks=x=>(nm(x).match(/[a-z0-9]{4,}/g)||[]).filter(w=>!STOPW.has(w)).map(w=>w.slice(0,6));
 function suggestPlace(info){
@@ -638,8 +638,11 @@ function suggestPlace(info){
   return best&&best.sc>=1.7?{sub:best.e.x.sub,theme:best.e.x.theme}:null;
 }
 function planPlace(info){
+  const h=info.hint&&info.hint.sub?info.hint:null,ht=h&&db.themes.find(x=>nm(x.name)===nm(h.theme||"À classer")),he=ht&&ht.subs.find(x=>nm(x.name)===nm(h.sub));
+  if(he)return{sid:he.id,label:ht.name+" › "+he.name};
   const g=suggestPlace(info);if(g)return{sid:g.sub.id,label:g.theme.name+" › "+g.sub.name};
-  const r=info.src&&db.sources.find(x=>x.id===info.src),theme=(r&&r.cat)||"À classer",sub=r?r.title:"En vrac";
+  if(h){const th=h.theme||"À classer";return{theme:th,sub:h.sub,label:th+" › "+h.sub+" (nouveau)"}}
+  const r=info.src&&db.sources.find(x=>x.id===info.src),theme=(r&&r.cat)||"À classer",sub=r&&r.kind==="Livre"?r.title:"En vrac";
   const t=db.themes.find(x=>nm(x.name)===nm(theme)),e=t&&t.subs.find(x=>nm(x.name)===nm(sub));
   return e?{sid:e.id,label:theme+" › "+sub}:{theme,sub,label:theme+" › "+sub+" (nouveau)"};
 }
@@ -676,7 +679,7 @@ function editPage(sid,iid){
 <label class="lbl" for="fG">Étiquettes (séparées par des virgules)</label><input id="fG" value="${esc((d.tags||[]).join(", "))}" placeholder="à vérifier, citation">
 <div class="row" style="margin-top:18px"><button type="submit" class="btn pri sp">Enregistrer</button>${isNew?"":`<button type="button" class="btn dg" data-a="delItem" data-s="${sid}" data-i="${iid}">Supprimer</button>`}</div>
 </form></div>`;
-  const planInfo=()=>({text:$("#fX").value,cite:$("#fC").value,tags:$("#fG").value.split(",").map(x=>x.trim()).filter(Boolean),src:$("#fR").value==="__new"?"":$("#fR").value});
+  const planInfo=()=>({text:$("#fX").value,cite:$("#fC").value,tags:$("#fG").value.split(",").map(x=>x.trim()).filter(Boolean),src:$("#fR").value==="__new"?"":$("#fR").value,hint:d.place});
   const hint=()=>{const hs=$("#fS");if(!hs||!$("#fSH"))return;$("#fSH").textContent=hs.value==="__auto"?"Sera classée dans : "+planPlace(planInfo()).label:""};
   let ht=0;const hintSoon=()=>{clearTimeout(ht);ht=setTimeout(hint,300)};
   $("#fR").onchange=e=>{$("#fN").hidden=e.target.value!=="__new";hint()};
@@ -692,12 +695,12 @@ function editPage(sid,iid){
     const text=$("#fX").value.trim(),url=$("#fU").value.trim();
     if(!text&&!url){toast("Écris un texte ou colle un lien.");return}
     let src=$("#fR").value;
-    if(src==="__new"){const t=$("#fNT").value.trim();src=t?newSource({title:t,kind:$("#fNK").value,url:(d.newSrc&&d.newSrc.url)||""}):""}
+    if(src==="__new"){const t=$("#fNT").value.trim();const ns=d.newSrc||{};src=t?newSource({title:t,kind:$("#fNK").value,url:ns.url||"",author:ns.author||"",year:ns.year||"",note:ns.note||"",cat:ns.cat||""}):""}
     const tags=[...new Set($("#fG").value.split(",").map(x=>x.trim().replace(/^#/,"")).filter(Boolean))];
     const vals={type:$("#fT").value,text,cite:$("#fC").value.trim(),src,page:$("#fP").value.trim(),verified:$("#fV").value,url,tags,imgs:[...fImgs],u:now()};
     const removed=isNew?[]:(it.imgs||[]).filter(x=>!fImgs.includes(x));
     let to=$("#fS").value,placed="";
-    if(to==="__auto"){const pl=planPlace({text,cite:vals.cite,tags,src});to=commitPlace(pl);placed=pl.label.replace(" (nouveau)","")}
+    if(to==="__auto"){const pl=planPlace({text,cite:vals.cite,tags,src,hint:d.place});to=commitPlace(pl);placed=pl.label.replace(" (nouveau)","")}
     const tf=findSub(to);
     if(isNew)tf.sub.items.unshift(newItem(vals));
     else{Object.assign(it,vals);if(to!==sid){f.sub.items=f.sub.items.filter(x=>x!==it);tf.sub.items.unshift(it)}}
@@ -775,10 +778,11 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 <label class="lbl" for="lP">Mot de passe (8 caractères minimum)</label><input id="lP" type="password" autocomplete="current-password" minlength="8" required>
 <div id="lM" class="mu" role="status"></div>
 <div class="row"><button class="btn pri sp" type="submit">Se connecter</button><button class="btn" type="button" data-a="signup">Créer le compte</button></div></form>`}
+${typeof gemCard==="function"?gemCard():""}
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
 <p class="mu">Mémo Débat · version 2</p></div></div>${tabs("c")}`;
-  updSync();
+  updSync();if(typeof gemBind==="function")gemBind();
   const lf=$("#lf");
   if(lf){
     const run=async create=>{
@@ -811,13 +815,13 @@ function openSheet(sid){
 <button class="opt" data-o="dict"><span class="ico">${ic("mic")}</span><span><b>Dicter</b><small>Je parle, le texte s’écrit</small></span></button>
 <button class="opt" data-o="paste"><span class="ico">${ic("link")}</span><span><b>Coller un texte ou un lien</b><small>Depuis le presse-papiers</small></span></button>
 <button class="opt" data-o="write"><span class="ico">${ic("edit")}</span><span><b>Écrire une fiche</b><small>Argument, exemple, chiffre, concept</small></span></button>
-<button class="opt" data-o="img"><span class="ico">${ic("img")}</span><span><b>Image ou graphique</b><small>Photo ou capture, allégée (~200 Ko)</small></span></button></div>`;
+<button class="opt" data-o="img"><span class="ico">${ic("img")}</span><span><b>Image ou graphique</b><small>Je lis le graphique et prépare la fiche</small></span></button></div>`;
   d.onclick=async e=>{
     if(e.target===d){closeSheet();return}
     const b=e.target.closest("[data-o]");if(!b)return;
     const t=$("#shT").value,o=b.dataset.o;if(t!=="auto")lsSet("memoLastSub",t);closeSheet();
     if(o==="photo")pickPhoto(t);
-    else if(o==="img")pickImgs(ids=>{draft={imgs:ids};go("#/e/"+t+"/new")});
+    else if(o==="img")imageFlow(t);
     else if(o==="write")go("#/e/"+t+"/new");
     else if(o==="dict"){draft={dict:true};go("#/e/"+t+"/new")}
     else if(o==="paste"){
@@ -918,5 +922,6 @@ if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js");
 </script>
 <script src="photo.js"></script>
 <script src="book.js"></script>
+<script src="vision.js"></script>
 </body>
 </html>
