@@ -111,8 +111,10 @@ async function visRefine(wk,gray,l,cv){
   if(!r.length)return"";
   const t=r.map(x=>x.text).join(" ").replace(/^[\s|\[\]]+|[\s|\[\]]+$/g,"").trim(),cf=r.reduce((a,x)=>a+x.conf,0)/r.length,w=l.text.split(" "),tail=w.slice(1).join(" "),head=w.slice(0,-1).join(" ");
   let out="";
-  if(tail.length>=8){const i=t.indexOf(tail);if(i>0&&i<=14)out=t.slice(0,i)+tail}
+  if(tail.length>=8){const i=t.indexOf(tail);if(i>0&&i<=14){const ex=t.slice(i+tail.length);out=t.slice(0,i)+tail+(/^\p{L}{2,}$/u.test(ex)?ex:"")}}
   if(!out&&head.length>=8&&t.startsWith(head)&&t.length-head.length<=14)out=t;
+  const mid=w.slice(1,-1).join(" ");  // début ET fin mal lus : on s'appuie sur le milieu
+  if(!out&&mid.length>=12){const i=t.indexOf(mid);if(i>=0&&i<=14&&t.length-i-mid.length<=14)out=t}
   return cf>=70&&out.length>l.text.length?out:"";
 }
 const pct=t=>t.trim().replace(/\s*%$/," %");
