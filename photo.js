@@ -10,7 +10,7 @@ async function getOcr(){
     await new Promise((ok,ko)=>{const s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";s.onload=ok;s.onerror=()=>{s.remove();ko(new Error("connexion requise pour la 1re utilisation"))};document.head.append(s)});
   }
   if(!ocrWorker)ocrWorker=(async()=>{
-    const w=await Tesseract.createWorker("fra",1,{logger:m=>{if(m.status==="recognizing text"&&ocrSay)ocrSay("Lecture de la page… "+Math.round(m.progress*100)+" %")}});
+    const w=await Tesseract.createWorker("fra",1,{logger:m=>{if(m.status==="recognizing text"&&ocrSay)ocrSay("Lecture de la page… "+Math.round(m.progress*100)+" %"+(window.ocrExtra||""))}});
     await w.setParameters({tessedit_pageseg_mode:"3"});
     return w;
   })();

@@ -61,30 +61,70 @@ async function ocrCanvas(file){
   const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(bmp,0,0,c.width,c.height);if(bmp.close)bmp.close();
   return c;
 }
-async function localAnalyse(cv){
-  const wk=await getOcr();
+// 2 versions pour l'OCR : niveaux de gris, et « contraste local » (texte noir sur blanc même s'il est blanc sur fond coloré)
+function ocrVersions(c){
+  const W=c.width,H=c.height,N=W*H,src=c.getContext("2d").getImageData(0,0,W,H).data;
+  const mk=()=>{const k=document.createElement("canvas");k.width=W;k.height=H;const x=k.getContext("2d");return{k,x,i:x.createImageData(W,H)}};
+  const G=mk(),M=mk(),gd=G.i.data,md=M.i.data;
+  for(let i=0;i<N;i++){const v=(src[4*i]*299+src[4*i+1]*587+src[4*i+2]*114)/1000;gd[4*i]=gd[4*i+1]=gd[4*i+2]=v;gd[4*i+3]=255}
+  const BS=16,bw=Math.ceil(W/BS),bh=Math.ceil(H/BS),bg=new Uint8Array(bw*bh*3),buf=[new Uint8Array(64),new Uint8Array(64),new Uint8Array(64)];
+  for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){
+    let n=0;for(let y=by*BS;y<Math.min(H,by*BS+BS);y+=2)for(let x=bx*BS;x<Math.min(W,bx*BS+BS);x+=2){const k=4*(y*W+x);buf[0][n]=src[k];buf[1][n]=src[k+1];buf[2][n]=src[k+2];n++}
+    for(let ch=0;ch<3;ch++){const s=buf[ch].subarray(0,n).sort();bg[(by*bw+bx)*3+ch]=s[n>>1]}
+  }
+  // distance à la couleur de fond la plus proche parmi celles des blocs voisins (évite les cadres aux frontières de couleur)
+  for(let y=0;y<H;y++){const by=y/BS|0;for(let x=0;x<W;x++){
+    const bx=x/BS|0,k=4*(y*W+x),R=src[k],Gc=src[k+1],B=src[k+2];let best=765;
+    for(let j=Math.max(0,by-1);j<=Math.min(bh-1,by+1)&&best>0;j++)for(let i=Math.max(0,bx-1);i<=Math.min(bw-1,bx+1);i++){
+      const b=(j*bw+i)*3,d=Math.abs(R-bg[b])+Math.abs(Gc-bg[b+1])+Math.abs(B-bg[b+2]);if(d<best)best=d}
+    const v=255-Math.min(255,best*1.5);md[k]=md[k+1]=md[k+2]=v;md[k+3]=255}}
+  G.x.putImageData(G.i,0,0);M.x.putImageData(M.i,0,0);
+  return[G.k,M.k];
+}
+async function visLines(wk,img){
   await wk.setParameters({tessedit_pageseg_mode:"11"});
-  let d;try{d=(await wk.recognize(cv)).data||{}}finally{await wk.setParameters({tessedit_pageseg_mode:"3"})}
+  let d;try{d=(await wk.recognize(img)).data||{}}finally{await wk.setParameters({tessedit_pageseg_mode:"3"})}
   const lines=[];
   for(const b of d.blocks||[])for(const p of b.paragraphs||[])for(const l of p.lines||[]){
     const ws=(l.words||[]).filter(w=>w.text&&w.text.trim());if(!ws.length)continue;
-    const text=ws.map(w=>w.text.trim()).join(" ").replace(/\s+/g," ").trim(),conf=ws.reduce((a,w)=>a+(w.confidence||0),0)/ws.length,bb=l.bbox||{x0:0,x1:0,y0:0,y1:0};
+    const text=ws.map(w=>w.text.trim()).join(" ").replace(/\s+/g," ").trim(),cw=ws.filter(w=>/[\p{L}\p{N}]/u.test(w.text)),conf=(cw.length?cw:ws).reduce((a,w)=>a+(w.confidence||0),0)/(cw.length||ws.length),bb=l.bbox||{x0:0,x1:0,y0:0,y1:0};
     if(conf>=45&&text.replace(/[^\p{L}\p{N}]/gu,"").length>=2)lines.push({text,conf,x0:bb.x0,x1:bb.x1,y0:bb.y0,y1:bb.y1,h:bb.y1-bb.y0});
   }
   if(!lines.length&&d.text)d.text.split(/\n+/).forEach((t,i)=>{t=t.trim();if(t.length>=3)lines.push({text:t,conf:60,y0:i,y1:i+1,h:1})});
-  const H=cv.height,top=lines.filter(l=>l.y0<H*0.38&&l.text.length>=8&&/\p{L}{3,}\s+\S+/u.test(l.text));
-  let title="";
+  return lines;
+}
+function visMerge(a,b){
+  const out=a.slice(),ar=l=>Math.max(0,l.x1-l.x0)*Math.max(0,l.y1-l.y0);
+  for(const l of b){
+    const o=out.find(o=>{const w=Math.min(o.x1,l.x1)-Math.max(o.x0,l.x0),h=Math.min(o.y1,l.y1)-Math.max(o.y0,l.y0);return w>0&&h>0&&w*h>0.5*Math.min(ar(o),ar(l))});
+    if(!o)out.push(l);else if(l.conf>o.conf+8&&l.text.length>=o.text.length*0.8)out[out.indexOf(o)]=l;
+  }
+  return out;
+}
+async function localAnalyse(cv){
+  const wk=await getOcr(),vs=ocrVersions(cv);let lines=[];
+  for(let i=0;i<vs.length;i++){
+    window.ocrExtra=" (passe "+(i+1)+"/"+vs.length+")";
+    try{lines=visMerge(lines,await visLines(wk,vs[i]))}catch(e){if(!i)throw e}
+  }
+  window.ocrExtra="";
+  const H=cv.height,txt=l=>l.text.replace(/[^\p{L}\p{N}]/gu,""),lettr=l=>(txt(l).match(/\p{L}/gu)||[]).length/Math.max(1,txt(l).length);
+  const top=lines.filter(l=>l.y0<H*0.38&&l.text.length>=8&&l.conf>=70&&lettr(l)>=0.75&&/\p{L}{3,}\s+\S+/u.test(l.text));
+  let title="",tl=null;
   if(top.length){
     const m=Math.max(...top.map(l=>l.h)),big=top.filter(l=>l.h>=m*0.8).sort((a,b)=>a.y0-b.y0);
-    let cur=big[0];title=cur.text;
-    for(const l of big.slice(1)){if(l.y0-cur.y1<Math.max(cur.h,1)*1.4){title+=" "+l.text;cur=l}else break}
+    let cur=big[0];title=cur.text;tl=cur;
+    for(const l of big.slice(1)){if(l.y0-cur.y1<Math.max(cur.h,1)*1.4){title+=" "+l.text;cur=l;tl=l}else break}
+    // sous-titre : ligne plus petite juste sous le titre
+    var subt=lines.filter(l=>l!==cur&&l.y0>=tl.y1-2&&l.y0-tl.y1<tl.h*2.2&&l.h<=m*0.8&&l.h>=m*0.3&&l.conf>=70&&l.text.length>=18&&lettr(l)>=0.75).sort((a,b)=>a.y0-b.y0)[0];
   }
   if(!title&&lines.length)title=lines.slice().sort((a,b)=>b.h-a.h)[0].text;
   const sRe=/^\s*(sources?|d['’]apr[eè]s|donn[eé]es|cr[eé]dit)\b\s*[:\-–.]?\s*(.*)$/i,sl=lines.find(l=>sRe.test(l.text)),source=sl?(sl.text.replace(sRe,"$2").trim()||sl.text):"";
   const lab=lines.filter(l=>l!==sl&&!title.includes(l.text)&&/\d/.test(l.text)&&/\p{L}{2,}/u.test(l.text)&&l.text.length>=5&&l.text.length<=70)
     .sort((a,b)=>b.conf-a.conf).slice(0,6).sort((a,b)=>a.y0-b.y0).map(l=>clip(l.text,70));
-  // valeurs avec unité (8,4 %) associées aux années (2019…) les plus proches à l'horizontale
+  // valeurs avec unité (8,4 %) : associées aux années (2019…) les plus proches à l'horizontale, sinon à l'étiquette voisine (au-dessus ou à gauche)
   const valRe=/^[\s(]*[+\-−]?\d{1,3}(?:[\s.]\d{3})*(?:[.,]\d+)?\s*(?:%|€|\$|£|k€|m€|md€|milliards?|millions?|points?)\s*\)?$/i,yrRe=/^\s*(?:19|20)\d{2}\s*$/,cx=l=>(l.x0+l.x1)/2;
+  lines.forEach(l=>{const c=l.text.replace(/^[\s=|_~.,:;*•·'"]+/,"").replace(/^[\-−]\s*[=|_~.,:;*•·]+\s*(?=\d)/,"");if(c!==l.text&&valRe.test(c))l.text=c});
   const vals=lines.filter(l=>valRe.test(l.text)),yrs=lines.filter(l=>yrRe.test(l.text)),paired=[];
   if(yrs.length>=2){
     const used=new Set();
@@ -93,16 +133,31 @@ async function localAnalyse(cv){
       if(best&&bd<cv.width*0.12){used.add(best);paired.push({x:cx(v),t:best.text.trim()+" : "+v.text.trim()})}
     }
   }
-  const fig=[...paired.sort((a,b)=>a.x-b.x).map(p=>p.t),...(paired.length?[]:vals.slice(0,6).map(v=>v.text.trim())),...lab].slice(0,8);
+  let lp=[];
+  if(paired.length<2){
+    for(const v of vals){
+      let best=null,bd=1e9;
+      for(const L of lines){
+        if(L===v||L===sl||valRe.test(L.text)||yrRe.test(L.text)||L.text.length>40||txt(L).replace(/\P{L}/gu,"").length<3||lettr(L)<0.8)continue;
+        const hh=Math.max(v.h,L.h);let dd=1e9;
+        if(L.y1<=v.y0+hh*0.3&&v.y0-L.y1<hh*1.6&&Math.abs(L.x0-v.x0)<hh*2)dd=Math.hypot(L.x0-v.x0,v.y0-L.y1);
+        else if(Math.abs((L.y0+L.y1)/2-(v.y0+v.y1)/2)<hh*0.6&&L.x1<=v.x0+hh*0.3&&v.x0-L.x1<hh*4)dd=Math.hypot(v.x0-L.x1,0)+hh;
+        if(dd<bd){bd=dd;best=L}
+      }
+      if(best)lp.push({v,y:v.y0,x:v.x0,t:best.text.replace(/[\s:]+$/,"")+" : "+v.text.trim()});
+    }
+    if(lp.length){const mh=Math.max(...lp.map(p=>p.v.h));lp=lp.filter(p=>p.v.h>=mh*0.75).sort((a,b)=>a.y-b.y||a.x-b.x)}
+  }
+  const fig=(paired.length>=2?paired.sort((a,b)=>a.x-b.x).map(p=>p.t):lp.length?lp.map(p=>p.t):[...vals.slice(0,6).map(v=>v.text.trim()),...lab]).slice(0,8);
   const all=lines.map(l=>l.text).join(" "),yr=(source+" "+title).match(/\b(?:19|20)\d{2}\b/);
   const words=[...new Set((title.toLowerCase().match(/\p{L}{5,}/gu)||[]))].slice(0,3);
-  return{title:clip(title,120),summary:"",figures:fig,sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([all]),sub:"",tags:words,type:"chi",engine:"local",found:lines.length};
+  return{title:clip(title,120),subtitle:subt?clip(subt.text,140):"",summary:"",figures:fig,sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([all]),sub:(()=>{const p=title.split(/\s*:\s/)[0].trim();return p.length>=6&&p.length<=50&&p!==title?p:title.length>=6&&title.length<=45?title:""})(),tags:words,type:"chi",engine:"local",found:lines.length};
 }
 
 /* --- brouillon de fiche --- */
 function toDraft(a,imgId){
   const ls=[];
-  if(a.summary)ls.push(a.summary);else if(a.title)ls.push(a.title);
+  if(a.summary)ls.push(a.summary);else{if(a.title)ls.push(a.title);if(a.subtitle)ls.push(a.subtitle)}
   (a.figures||[]).forEach(f=>ls.push("• "+f));
   const title=a.title||("Image du "+new Date().toLocaleDateString("fr-FR"));
   return{type:a.type||"chi",text:ls.join("\n"),tags:[...new Set(["graphique",...(a.tags||[])])],imgs:[imgId],
