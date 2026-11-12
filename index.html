@@ -616,7 +616,7 @@ ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<button class="c
 const STOPW=new Set("avec dans pour par sur sous cette cela celui celle ceux elles ils nous vous sont etre avoir fait faire plus moins tres aussi comme mais donc leur leurs entre vers chez sans depuis alors ainsi apres avant dont quand tout tous toute toutes autre autres meme ete etait ont the and that this with from have for are was were their which about into more than temps fois chose choses monde partie facon jour jours annee annees gens personne personnes lorsque lors selon encore toujours jamais devez doivent peuvent peut bien bon bonne quelque quelques plusieurs chaque notre votre vos nos ces ses graphique graphiques image images".split(" "));
 const nm=x=>String(x||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
 const toks=x=>(nm(x).match(/[a-z0-9]{4,}/g)||[]).filter(w=>!STOPW.has(w)).map(w=>w.slice(0,6));
-const GENTAG=new Set(["graphique","a decrire","a verifier"]),tagToks=a=>(a||[]).filter(g=>!GENTAG.has(nm(String(g)).replace(/^#/,""))).flatMap(toks);
+const GENTAG=new Set(["graphique","capture","a decrire","a verifier"]),tagToks=a=>(a||[]).filter(g=>!GENTAG.has(nm(String(g)).replace(/^#/,""))).flatMap(toks);
 function suggestPlace(info,nameOnly){
   const subs=allSubs();if(!subs.length)return null;
   const N=subs.length,df=new Map(),idx=subs.map(x=>{
@@ -786,7 +786,7 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 ${typeof gemCard==="function"?gemCard():""}
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 6 (12/11, 19 h 00)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 6a (12/11, 19 h 30)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   const lf=$("#lf");
   if(lf){
