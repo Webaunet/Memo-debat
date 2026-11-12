@@ -659,7 +659,7 @@ function srcOptions(sel){return`<option value="">(aucune)</option>${db.sources.s
 function editPage(sid,iid){
   const isNew=iid==="new";let f=findSub(sid),it=isNew?null:f&&f.sub.items.find(x=>x.id===iid);
   if(!isNew&&!it)return go("#/");
-  const d=isNew?(draft||{}):it;draft=null;fImgs=[...(d.imgs||[])];
+  const d=isNew?(draft||{}):it;draft=null;fImgs=[...(d.imgs||[])];window.rereadNS=null;
   const auto=isNew&&sid==="auto";
   const subSel=(isNew?`<option value="__auto"${auto?" selected":""}>Automatique (déduit du contenu)</option>`:"")+allSubs().map(x=>`<option value="${x.sub.id}"${x.sub.id===sid?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("");
   $("#app").innerHTML=`<div class="wrap">
@@ -678,6 +678,8 @@ function editPage(sid,iid){
 <div><label class="lbl" for="fV">Vérifié le</label><input id="fV" type="date" value="${esc(d.verified||"")}"></div></div>
 <label class="lbl" for="fU">Lien (page, vidéo YouTube, image)</label><input id="fU" type="url" value="${esc(d.url||"")}" placeholder="https://…">
 <label class="lbl">Images (photo, capture, graphique)</label><div id="fI" class="imgs"></div><button type="button" class="btn" data-a="addimg" style="margin-top:8px;min-height:44px">${ic("img",18)}Ajouter une image</button>
+<button type="button" class="btn" data-a="reread" style="margin-top:8px;min-height:44px">${ic("img",18)}Relire le texte de l’image</button>
+<details id="diag" class="card" style="margin-top:10px"${d.diag?"":" hidden"}><summary>Détails de la lecture</summary><pre id="diagT" style="white-space:pre-wrap;word-break:break-word;font-size:12px;margin:8px 0 0">${esc(d.diag||"")}</pre></details>
 <label class="lbl" for="fG">Étiquettes (séparées par des virgules)</label><input id="fG" value="${esc((d.tags||[]).join(", "))}" placeholder="à vérifier, citation">
 <div class="row" style="margin-top:18px"><button type="submit" class="btn pri sp">Enregistrer</button>${isNew?"":`<button type="button" class="btn dg" data-a="delItem" data-s="${sid}" data-i="${iid}">Supprimer</button>`}</div>
 </form></div>`;
@@ -697,7 +699,7 @@ function editPage(sid,iid){
     const text=$("#fX").value.trim(),url=$("#fU").value.trim();
     if(!text&&!url){toast("Écris un texte ou colle un lien.");return}
     let src=$("#fR").value;
-    if(src==="__new"){const t=$("#fNT").value.trim();const ns=d.newSrc||{};src=t?newSource({title:t,kind:$("#fNK").value,url:ns.url||"",author:ns.author||"",year:ns.year||"",note:ns.note||"",cat:ns.cat||""}):""}
+    if(src==="__new"){const t=$("#fNT").value.trim();const ns=d.newSrc||window.rereadNS||{};src=t?newSource({title:t,kind:$("#fNK").value,url:ns.url||"",author:ns.author||"",year:ns.year||"",note:ns.note||"",cat:ns.cat||""}):""}
     const tags=[...new Set($("#fG").value.split(",").map(x=>x.trim().replace(/^#/,"")).filter(Boolean))];
     const vals={type:$("#fT").value,text,cite:$("#fC").value.trim(),src,page:$("#fP").value.trim(),verified:$("#fV").value,url,tags,imgs:[...fImgs],u:now()};
     const removed=isNew?[]:(it.imgs||[]).filter(x=>!fImgs.includes(x));
@@ -783,7 +785,7 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 ${typeof gemCard==="function"?gemCard():""}
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 5f (12/11, 18 h)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 5g (12/11, 18 h 40)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   const lf=$("#lf");
   if(lf){
@@ -894,6 +896,7 @@ document.addEventListener("click",e=>{
     exportDocx({name:sid==="all"?"Antisèche — toutes les fiches":"Antisèche — "+subs[0].sub.name,theme:sid==="all"?"":subs[0].theme.name,items:subs.flatMap(x=>x.sub.items.filter(i=>i.star).map(i=>pubItem(i,sid==="all"?x.sub.name:"")))});
   }
   else if(a==="addimg")pickImgs(ids=>{fImgs.push(...ids);drawFI()});
+  else if(a==="reread"){if(typeof rereadImage==="function")rereadImage();else toast("Lecture d’image pas encore chargée.")}
   else if(a==="rmimg"){fImgs=fImgs.filter(x=>x!==iid);drawFI()}
   else if(a==="zoom"){if(!b.getAttribute("src"))return;const l=document.createElement("div");l.className="lb";l.innerHTML=`<img src="${b.getAttribute("src")}" alt=""><button type="button" class="lbx" aria-label="Fermer l’image">×</button>`;const kd=e=>{if(e.key==="Escape")cl()},cl=()=>{l.remove();document.removeEventListener("keydown",kd)};l.onclick=cl;document.addEventListener("keydown",kd);document.body.append(l)}
   else if(a==="share"){

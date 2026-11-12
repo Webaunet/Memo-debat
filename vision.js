@@ -111,19 +111,19 @@ function visFindBlocks(c){
       }
     }
     const bw=x1-x0+1,bh=y1-y0+1;
-    if(n>=Math.max(24,N*0.004)&&n/(bw*bh)>=0.72&&bw>=5&&bh>=4&&!(bw>gw*0.85&&bh>gh*0.85))out.push({n,x0:x0*S,y0:y0*S,x1:(x1+1)*S,y1:(y1+1)*S});
+    if(n>=Math.max(24,N*0.004)&&n/(bw*bh)>=0.45&&bw>=5&&bh>=4&&bw*bh<=N*0.6)out.push({n,x0:x0*S,y0:y0*S,x1:(x1+1)*S,y1:(y1+1)*S});
   }
   return out.sort((a,b)=>b.n-a.n).slice(0,8);
 }
-async function visBlocks(wk,cv,map){
+async function visBlocks(wk,cv){
   const out=[];
   for(const b of visFindBlocks(cv)){
     const x0=b.x0+3,y0=b.y0+3,x1=Math.min(cv.width,b.x1-3),y1=Math.min(cv.height,b.y1-3);
     if(x1-x0<24||y1-y0<16)continue;
-    const c=document.createElement("canvas");c.width=x1-x0;c.height=y1-y0;
-    const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(map,x0,y0,c.width,c.height,0,0,c.width,c.height);
+    const c=visBin(cv,x0,y0,x1,y1,y1-y0<140?2:1),k=y1-y0<140?2:1;
+    if(!c)continue;
     let r=[];try{r=await visLines(wk,c,"6")}catch(e){}
-    r.forEach(l=>{l.x0+=x0;l.x1+=x0;l.y0+=y0;l.y1+=y0;l.blk=1;out.push(l)});
+    r.forEach(l=>{l.x0=l.x0/k+x0;l.x1=l.x1/k+x0;l.y0=l.y0/k+y0;l.y1=l.y1/k+y0;l.h=l.y1-l.y0;l.blk=1;out.push(l)});
   }
   return out;
 }
@@ -135,32 +135,69 @@ function visMerge(a,b){
   }
   return out;
 }
-// relit une ligne de titre seule (recadrée, agrandie ×2, en 1 ligne) : récupère par ex. « 44 % » lu « © » dans un bandeau coloré
-async function visRefine(wk,gray,l,cv){
-  const ml=Math.round(cv.width*0.1),mr=Math.round(cv.width*0.012),my=Math.round(l.h*0.35),x0=Math.max(0,l.x0-ml),y0=Math.max(0,l.y0-my),x1=Math.min(cv.width,l.x1+mr),y1=Math.min(cv.height,l.y1+my);
-  if(x1-x0<20||y1-y0<10)return"";
+// image « texte noir sur blanc » : on retire la couleur de fond dominante de la zone (marche aussi pour du blanc sur rouge, jaune, bleu…)
+function visBin(cv,x0,y0,x1,y1,k){
+  x0=Math.max(0,x0|0);y0=Math.max(0,y0|0);x1=Math.min(cv.width,x1|0);y1=Math.min(cv.height,y1|0);
+  const w=x1-x0,h=y1-y0;if(w<8||h<8)return null;
+  const D=cv.getContext("2d").getImageData(x0,y0,w,h).data,N=w*h,cnt=new Map(),q=o=>((D[o]>>4)<<8)|((D[o+1]>>4)<<4)|(D[o+2]>>4);
+  for(let i=0;i<N;i+=2){const z=q(4*i);cnt.set(z,(cnt.get(z)||0)+1)}
+  let bq=0,bn=-1;for(const[z,n]of cnt)if(n>bn){bn=n;bq=z}
+  let r=0,g=0,b=0,n=0;for(let i=0;i<N;i+=2){const o=4*i;if(q(o)===bq){r+=D[o];g+=D[o+1];b+=D[o+2];n++}}
+  r/=n;g/=n;b/=n;
+  const c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d"),im=x.createImageData(w,h),o=im.data;
+  for(let i=0;i<N;i++){const p=4*i,d=Math.abs(D[p]-r)+Math.abs(D[p+1]-g)+Math.abs(D[p+2]-b),v=255*(1-Math.min(1,Math.max(0,(d-100)/220)));o[p]=o[p+1]=o[p+2]=v;o[p+3]=255}
+  // le cadre qui touche le bord du recadrage (hors du bandeau) est effacé : il ne doit pas coller aux lettres
+  const dk=new Uint8Array(N),st=new Int32Array(N);let sp=0;
+  const pu=i=>{if(!dk[i]&&o[4*i]<128){dk[i]=1;st[sp++]=i}};
+  for(let i=0;i<w;i++){pu(i);pu((h-1)*w+i)}for(let j=0;j<h;j++){pu(j*w);pu(j*w+w-1)}
+  while(sp){const p=st[--sp],px=p%w;if(px>0)pu(p-1);if(px<w-1)pu(p+1);if(p>=w)pu(p-w);if(p<N-w)pu(p+w)}
+  for(let i=0;i<N;i++)if(dk[i]){const q=4*i;o[q]=o[q+1]=o[q+2]=255}
+  x.putImageData(im,0,0);
+  if(!k||k===1)return c;
+  const t=document.createElement("canvas");t.width=w*k;t.height=h*k;const tx=t.getContext("2d");tx.fillStyle="#fff";tx.fillRect(0,0,t.width,t.height);tx.imageSmoothingQuality="high";tx.drawImage(c,0,0,t.width,t.height);return t;
+}
+// consensus entre plusieurs lectures d'une même ligne : on garde celle qui ressemble le plus aux autres (pondérées par leur confiance)
+const visNrm=t=>t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9% ]+/g," ").replace(/\s+/g," ").trim();
+function visLev(a,b){
+  const m=a.length,n=b.length;if(!m)return n;if(!n)return m;
+  let p=Array.from({length:n+1},(_,j)=>j);
+  for(let i=1;i<=m;i++){const c=[i];for(let j=1;j<=n;j++)c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1));p=c}
+  return p[n];
+}
+const visSim=(a,b)=>{a=visNrm(a);b=visNrm(b);const m=Math.max(a.length,b.length)||1;return 1-visLev(a,b)/m};
+function visPick(c){
+  c=c.filter(x=>x.t&&x.t.length>=2);if(!c.length)return"";
+  let best=c[0],bs=-1;
+  for(const x of c){let s=0;for(const y of c)s+=(y===x?1:visSim(x.t,y.t)**4)*y.w;if(s>bs){bs=s;best=x}}
+  return best.t;
+}
+// relit une ligne seule (recadrée, agrandie, mode « 1 ligne ») sous 3 formes : gris ×2, texte noir sur blanc ×2 et ×3
+async function visReadLine(wk,cv,gray,l){
+  const ml=Math.round(cv.width*0.1),mr=Math.round(cv.width*0.012),my=Math.round(l.h*0.35),x0=Math.max(0,l.x0-ml),y0=Math.max(0,l.y0-my),x1=Math.min(cv.width,l.x1+mr),y1=Math.min(cv.height,l.y1+my),out=[];
+  if(x1-x0<20||y1-y0<10)return out;
+  const run=async(img,w)=>{
+    if(!img)return;let r;try{r=await visLines(wk,img,"7")}catch(e){return}
+    if(!r.length)return;
+    const t=r.map(x=>x.text).join(" ").replace(/^[\s|\[\]]+|[\s|\[\]]+$/g,"").trim(),cf=r.reduce((a,x)=>a+x.conf,0)/r.length;
+    if(t&&cf>=55)out.push({t,w:w*cf/100});
+  };
   const c=document.createElement("canvas");c.width=(x1-x0)*2;c.height=(y1-y0)*2;
   const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(gray,x0,y0,x1-x0,y1-y0,0,0,c.width,c.height);
-  let r;try{r=await visLines(wk,c,"7")}catch(e){return""}
-  if(!r.length)return"";
-  const t=r.map(x=>x.text).join(" ").replace(/^[\s|\[\]]+|[\s|\[\]]+$/g,"").trim(),cf=r.reduce((a,x)=>a+x.conf,0)/r.length,w=l.text.split(" "),tail=w.slice(1).join(" "),head=w.slice(0,-1).join(" ");
-  let out="";
-  if(tail.length>=8){const i=t.indexOf(tail);if(i>0&&i<=14){const ex=t.slice(i+tail.length);out=t.slice(0,i)+tail+(/^\p{L}{2,}$/u.test(ex)?ex:"")}}
-  if(!out&&head.length>=8&&t.startsWith(head)&&t.length-head.length<=14)out=t;
-  const mid=w.slice(1,-1).join(" ");  // début ET fin mal lus : on s'appuie sur le milieu
-  if(!out&&mid.length>=12){const i=t.indexOf(mid);if(i>=0&&i<=14&&t.length-i-mid.length<=14)out=t}
-  return cf>=70&&out.length>l.text.length?out:"";
+  await run(c,1);await run(visBin(cv,x0,y0,x1,y1,2),1.5);await run(visBin(cv,x0,y0,x1,y1,3),1.5);
+  return out;
 }
 const pct=t=>t.trim().replace(/\s*%$/," %");
 async function localAnalyse(cv){
-  const wk=await getOcr(),vs=ocrVersions(cv);let lines=[];
+  const wk=await getOcr(),vs=ocrVersions(cv),raws=[],dg=[];let lines=[];
   for(let i=0;i<vs.length;i++){
     window.ocrExtra=" (passe "+(i+1)+"/"+vs.length+")";
-    try{lines=visMerge(lines,await visLines(wk,vs[i]))}catch(e){if(!i)throw e}
+    try{const L=await visLines(wk,vs[i]);raws.push({n:i?"contraste":"gris",w:i?1.2:1,L});lines=visMerge(lines,L)}catch(e){if(!i)throw e}
   }
   window.ocrExtra=" (blocs de couleur)";
-  try{lines=visMerge(lines,await visBlocks(wk,cv,vs[1]))}catch(e){}
+  let BL=[];try{BL=await visBlocks(wk,cv)}catch(e){}
+  raws.push({n:"blocs",w:1.5,L:BL});lines=visMerge(lines,BL);
   window.ocrExtra="";
+  dg.push("Lignes lues : "+raws.map(r=>r.n+" "+r.L.length).join(" · ")+" ; blocs de couleur : "+visFindBlocks(cv).length);
   const H=cv.height,txt=l=>l.text.replace(/[^\p{L}\p{N}]/gu,""),lettr=l=>(txt(l).match(/\p{L}/gu)||[]).length/Math.max(1,txt(l).length);
   const top=lines.filter(l=>l.y0<H*0.38&&l.text.length>=8&&l.conf>=70&&lettr(l)>=0.75&&/\p{L}{3,}\s+\S+/u.test(l.text));
   let title="",tl=null;
@@ -168,7 +205,18 @@ async function localAnalyse(cv){
     const m=Math.max(...top.map(l=>l.h)),big=top.filter(l=>l.h>=m*0.8).sort((a,b)=>a.y0-b.y0);
     let cur=big[0];const grp=[cur];tl=cur;
     for(const l of big.slice(1)){if(l.y0-cur.y1<Math.max(cur.h,1)*1.4){grp.push(l);cur=l;tl=l}else break}
-    for(const l of grp){try{const t=await visRefine(wk,vs[0],l,cv);if(t)l.text=t}catch(e){}}
+    window.ocrExtra=" (titre)";
+    for(const l of grp){
+      try{
+        const ov=(a,b)=>{const w=Math.min(a.x1,b.x1)-Math.max(a.x0,b.x0),h=Math.min(a.y1,b.y1)-Math.max(a.y0,b.y0);return w>0&&h>0?w*h/Math.min((a.x1-a.x0)*(a.y1-a.y0),(b.x1-b.x0)*(b.y1-b.y0)):0};
+        const cands=[];raws.forEach(r=>r.L.forEach(x=>{if(x.x1!==undefined&&ov(x,l)>0.5&&x.text.length>=l.text.length*0.6&&x.text.length<=l.text.length*1.6)cands.push({t:x.text,w:r.w*x.conf/100,n:r.n})}));
+        (await visReadLine(wk,cv,vs[0],l)).forEach((x,i)=>cands.push({...x,n:"relecture "+(i+1)}));
+        const t=visPick(cands);
+        dg.push("Titre « "+clip(t||l.text,70)+" » ← "+cands.map(c=>"«"+clip(c.t,40)+"» "+c.n+" "+c.w.toFixed(1)).join(" | "));
+        if(t)l.text=t;
+      }catch(e){dg.push("Titre : erreur "+clip(e.message,40))}
+    }
+    window.ocrExtra="";
     title=grp.map(l=>l.text).join(" ");
     // sous-titre : ligne plus petite juste sous le titre
     var subt=lines.filter(l=>l!==cur&&l.y0>=tl.y1-2&&l.y0-tl.y1<tl.h*2.2&&l.h<=m*0.8&&l.h>=m*0.3&&l.conf>=70&&l.text.length>=18&&lettr(l)>=0.75).sort((a,b)=>a.y0-b.y0)[0];
@@ -207,7 +255,7 @@ async function localAnalyse(cv){
   const fig=(paired.length>=2?paired.sort((a,b)=>a.x-b.x).map(p=>p.t):lp.length?lp.map(p=>p.t):[...vals.slice(0,6).map(v=>pct(v.text)),...lab]).slice(0,8);
   const all=lines.map(l=>l.text).join(" "),yr=(source+" "+title+" "+(subt?subt.text:"")+" "+(subt2?subt2.text:"")).match(/\b(?:19|20)\d{2}\b/);
   const words=[...new Set((title.toLowerCase().match(/\p{L}{5,}/gu)||[]))].slice(0,3);
-  return{title:clip(title,120),subtitle:subt?clip(subt.text+(subt2?" "+subt2.text:""),200):"",summary:"",figures:fig,sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([all]),sub:(()=>{const p=title.split(/\s*:\s/)[0].trim();return p.length>=6&&p.length<=50&&p!==title?p:title.length>=6&&title.length<=45?title:""})(),tags:words,type:"chi",engine:"local",found:lines.length};
+  return{title:clip(title,120),subtitle:subt?clip(subt.text+(subt2?" "+subt2.text:""),200):"",summary:"",figures:fig,sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([all]),sub:(()=>{const p=title.split(/\s*:\s/)[0].trim();return p.length>=6&&p.length<=50&&p!==title?p:title.length>=6&&title.length<=45?title:""})(),tags:words,type:"chi",engine:"local",found:lines.length,diag:"Lecture locale (version 5g)\n"+dg.join("\n")+"\nValeurs : "+fig.length+(fig.length?" — "+fig.join(" ; "):"")};
 }
 
 /* --- brouillon de fiche --- */
@@ -216,7 +264,7 @@ function toDraft(a,imgId){
   if(a.summary)ls.push(a.summary);else{if(a.title)ls.push(a.title);if(a.subtitle)ls.push(a.subtitle)}
   (a.figures||[]).forEach(f=>ls.push("• "+f));
   const title=a.title||("Image du "+new Date().toLocaleDateString("fr-FR"));
-  return{type:a.type||"chi",text:ls.join("\n"),tags:[...new Set(["graphique",...(a.tags||[])])],imgs:[imgId],
+  return{diag:a.diag||(a.engine==="gemini"?"Lecture par Gemini (version 5g)":""),type:a.type||"chi",text:ls.join("\n"),tags:[...new Set(["graphique",...(a.tags||[])])],imgs:[imgId],
     newSrc:{title,kind:"Graphique",url:"",author:a.sourceLine||"",year:a.year||"",note:a.sourceLine?"Source indiquée sur l’image : "+a.sourceLine:"",cat:a.theme||""},
     place:{theme:a.theme||"À classer",sub:a.sub||"En vrac"}};
 }
@@ -264,6 +312,28 @@ async function runImage(file,tid){
     draft=toDraft({},id);
   }
   close();flushImages();go("#/e/"+tid+"/new");toast(msg,6000);
+}
+
+/* --- « Relire le texte de l'image » sur une fiche existante : refait l'analyse de la 1re image et remplit le formulaire --- */
+async function rereadImage(){
+  const id=typeof fImgs!=="undefined"&&fImgs[0];if(!id){toast("Ajoute d’abord une image à la fiche.");return}
+  const btn=document.querySelector("[data-a=reread]"),old=btn?btn.textContent:"",say=m=>{if(btn)btn.textContent=m};
+  if(btn){if(btn.disabled)return;btn.disabled=true}
+  try{
+    say("Lecture en cours…");
+    const u=await imgUrl(id);if(!u)throw new Error("image introuvable");
+    const blob=await(await fetch(u)).blob();let a=null,pre="";
+    if(gKey()){try{a=await geminiAnalyse(blob)}catch(e){pre="Gemini indisponible, lecture locale. "}}
+    if(!a){ocrSay=m=>say(m);a=await localAnalyse(await ocrCanvas(blob))}
+    const dr=toDraft(a,id),$=q=>document.querySelector(q);
+    if(!$("#fX"))return;
+    $("#fX").value=dr.text;if(a.type)$("#fT").value=dr.type;
+    const tg=$("#fG");tg.value=[...new Set([...tg.value.split(",").map(x=>x.trim().replace(/^#/,"")).filter(Boolean),...dr.tags])].join(", ");
+    window.rereadNS=dr.newSrc;$("#fR").value="__new";$("#fN").hidden=false;$("#fNT").value=dr.newSrc.title;$("#fNK").value="Graphique";
+    const dg=$("#diag");if(dg){$("#diagT").textContent=dr.diag||"";dg.hidden=!dr.diag}
+    toast(pre+(a.found||a.engine==="gemini"?"Texte relu. Vérifie, puis enregistre.":"Aucun texte lisible sur l’image."),5000);
+  }catch(e){toast("Lecture impossible : "+clip(e.message,60))}
+  finally{ocrSay=null;if(btn){btn.disabled=false;btn.textContent=old}}
 }
 
 /* --- réglage Gemini (page Compte) --- */
