@@ -1,9 +1,12 @@
 /* ===== Photo annotée : repérer les passages marqués (crayon en marge, soulignement, surligneur) ===== */
 let ocrWorker=null,ocrSay=null,scanBusy=false;
+// plusieurs photos : file d'attente traitée une par une (validation à chaque photo)
+let photoQ=[],photoN=0,photoK=0,photoTid="auto",photoTot=0;
 function pickPhoto(tid){
-  const i=document.createElement("input");i.type="file";i.accept="image/*";i.style.display="none";document.body.append(i);
-  i.onchange=()=>{const f=i.files[0];i.remove();if(f)scanPhoto(f,tid)};i.click();
+  const i=document.createElement("input");i.type="file";i.accept="image/*";i.multiple=true;i.style.display="none";document.body.append(i);
+  i.onchange=()=>{const fs=[...i.files];i.remove();if(!fs.length)return;photoQ=fs.slice(1);photoN=fs.length;photoK=1;photoTid=tid;photoTot=0;scanPhoto(fs[0],tid)};i.click();
 }
+function nextPhoto(){if(!photoQ.length)return false;photoK++;scanPhoto(photoQ.shift(),photoTid);return true}
 async function getOcr(){
   if(!window.Tesseract){
     if(ocrSay)ocrSay("Chargement du lecteur de texte (1re fois, ~10 Mo)…");
@@ -399,7 +402,10 @@ async function scanPhoto(file,tid){
     if(!cols.length)throw new Error("texte illisible. Reprends la photo plus nette, page à plat et bien éclairée.");
     say("");
     openReview({cv,W,H,cols,page:pageNum(cols)},tid);
-  }catch(e){say("Échec : "+e.message)}
+  }catch(e){
+    if(photoQ.length){say("Photo "+photoK+" sur "+photoN+" illisible — suivante…");setTimeout(nextPhoto,1500)}
+    else say("Échec : "+e.message);
+  }
   finally{scanBusy=false}
 }
 // écran de validation : photo avec lignes repérées (toucher pour ajouter/retirer) + passages modifiables
@@ -443,7 +449,7 @@ function openReview(R,tid){
     return planPlace({text:texts.join(" "),src:sv==="__new"?"":sv});
   };
   const hint=()=>{d.querySelector("#rvDH").textContent=d.querySelector("#rvD").value==="__auto"?"Sera classé dans : "+planNow().label:""};
-  const count=()=>{hint();const nb=d.querySelectorAll("#rvP input:checked").length,b=d.querySelector("#rvOk");b.textContent=nb?"Créer "+nb+" fiche"+(nb>1?"s":""):"Créer";b.disabled=!nb;d.querySelector("#rvH").textContent=ps.length+" passage"+(ps.length>1?"s":"")+" repéré"+(ps.length>1?"s":"")};
+  const count=()=>{hint();const nb=d.querySelectorAll("#rvP input:checked").length,b=d.querySelector("#rvOk");b.textContent=nb?"Créer "+nb+" fiche"+(nb>1?"s":""):"Créer";b.disabled=!nb;d.querySelector("#rvH").textContent=(photoN>1?"Photo "+photoK+" sur "+photoN+" · ":"")+ps.length+" passage"+(ps.length>1?"s":"")+" repéré"+(ps.length>1?"s":"")};
   const list=()=>{
     d.querySelector("#rvP").innerHTML=ps.length?ps.map((p,i)=>`<div class="card pas"><label class="chk"><input type="checkbox" data-i="${i}" checked><b>Passage ${i+1}</b></label><textarea data-i="${i}" rows="4">${esc(p.text)}</textarea></div>`).join(""):'<p class="mu">Aucune marque repérée : touche les lignes à garder sur la photo.</p>';
     count();
@@ -463,7 +469,7 @@ function openReview(R,tid){
   };
   d.onclick=e=>{
     const b=e.target.closest("[data-r]");if(!b)return;
-    if(b.dataset.r==="close"){d.remove();document.body.style.overflow="";return}
+    if(b.dataset.r==="close"){d.remove();document.body.style.overflow="";if(photoQ.length)toast("Import arrêté : "+photoQ.length+" photo"+(photoQ.length>1?"s":"")+" non traitée"+(photoQ.length>1?"s":"")+".");photoQ=[];photoN=0;return}
     if(b.dataset.r==="book"){pickBook(id=>{d.querySelector("#rvS").innerHTML=srcOpts(id);d.querySelector("#rvSN").hidden=true;hint()});return}
     const t=d.querySelector("#rvT").value,pg=d.querySelector("#rvPg").value.trim();
     let sid=d.querySelector("#rvS").value;
@@ -482,7 +488,9 @@ function openReview(R,tid){
 
 // après la création des fiches : proposer la page suivante (annoter un livre page après page)
 function afterReview(n,label){
-  closeSheet();
+  closeSheet();photoTot+=n;
+  if(photoQ.length){toast(photoTot+" fiche"+(photoTot>1?"s":"")+" créée"+(photoTot>1?"s":"")+" — photo suivante…",2500);nextPhoto();return}
+  if(photoN>1){n=photoTot;photoN=0}
   const d=document.createElement("div");d.className="ov";d.id="sh";
   d.innerHTML=`<div class="sheet" role="dialog" aria-label="Fiches créées"><div class="h"></div><h2 class="ct" style="margin:0">${n} fiche${n>1?"s":""} créée${n>1?"s":""}</h2><p class="mu" style="margin:0">Classée${n>1?"s":""} dans : ${esc(label)}</p>
 <button class="opt pri" data-o="next"><span class="ico">${ic("cam",24)}</span><span><b>Page suivante</b><small>Même livre, classement automatique</small></span></button>

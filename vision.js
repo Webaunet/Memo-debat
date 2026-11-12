@@ -269,25 +269,17 @@ function toDraft(a,imgId){
     place:{theme:a.theme||"À classer",sub:a.sub||"En vrac"}};
 }
 
-/* --- « Image ou graphique » : choisir, analyser, ouvrir la fiche prête --- */
+/* --- « Image ou graphique » : choisir (une ou plusieurs), analyser, ouvrir la fiche prête --- */
 function imageFlow(tid){
-  const i=document.createElement("input");i.type="file";i.accept="image/*";i.style.display="none";document.body.append(i);
-  i.onchange=()=>{const f=i.files[0];i.remove();if(f)runImage(f,tid)};i.click();
+  const i=document.createElement("input");i.type="file";i.accept="image/*";i.multiple=true;i.style.display="none";document.body.append(i);
+  i.onchange=()=>{const fs=[...i.files];i.remove();if(fs.length===1)runImage(fs[0],tid);else if(fs.length>1)runBatch(fs,tid)};i.click();
 }
-async function runImage(file,tid){
-  const d=document.createElement("div");d.className="ov";d.id="an";let dead=false,id="";
-  const url=URL.createObjectURL(file);
-  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Analyse de l’image"><div class="h"></div><h2 class="ct" style="margin:0">Analyse de l’image</h2>
-<img src="${url}" alt="" style="max-height:200px;width:100%;object-fit:contain;border-radius:12px;background:#fff">
-<p class="mu" id="anS" role="status" style="margin:0">Préparation…</p><button class="btn gh" data-x="1">Annuler</button></div>`;
-  const close=()=>{d.remove();URL.revokeObjectURL(url);ocrSay=null};
-  d.onclick=e=>{if(e.target===d||e.target.closest("[data-x]")){dead=true;close();if(id)dropImgs([id])}};
-  document.body.append(d);
-  const st=m=>{const e=d.querySelector("#anS");if(e)e.textContent=m};
-  let a=null,gErr="",msg="";
+// analyse d'une image : compresse + stocke, puis Gemini (si clé) ou lecture locale. ctx={dead,id} partagé avec l'écran d'attente.
+async function visAnalyse(file,st,ctx){
+  let a=null,gErr="";
   try{
-    const blob=await compress(file);id=uid();await idbPut({id,blob,up:0,t:Date.now()});
-    if(dead){dropImgs([id]);return}
+    const blob=await compress(file);ctx.id=uid();await idbPut({id:ctx.id,blob,up:0,t:Date.now()});
+    if(ctx.dead)return{id:ctx.id};
     if(gKey()){
       st("Lecture du graphique par Gemini…");
       const tryG=async()=>{try{return await geminiAnalyse(blob)}catch(e){return e}};
@@ -296,22 +288,89 @@ async function runImage(file,tid){
       if(r instanceof Error)gErr=r.name==="AbortError"?"Gemini : délai dépassé":r.status?"Gemini : erreur "+r.status:r instanceof TypeError?"Gemini injoignable":"Gemini : réponse inutilisable";
       else a=r;
     }
-    if(dead){dropImgs([id]);return}
+    if(ctx.dead)return{id:ctx.id};
     if(!a){
       const pre=gErr?gErr+" — ":"";
       st(pre+"Lecture du texte de l’image…");ocrSay=m=>st(pre+m);
-      a=await localAnalyse(await ocrCanvas(file));ocrSay=null;
+      try{a=await localAnalyse(await ocrCanvas(file))}finally{ocrSay=null}
     }
-    if(dead){dropImgs([id]);return}
-    msg=a.engine==="gemini"?"Fiche prête (Gemini). Vérifie, puis enregistre.":(a.found?"Fiche prête (texte lu sur l’image). Vérifie, puis enregistre.":"Aucun texte lisible : décris l’image en une phrase.");
-    draft=toDraft(a,id);
-  }catch(e){
-    if(dead){if(id)dropImgs([id]);return}
-    msg="Analyse impossible ("+clip(e.message,60)+"). L’image est jointe : décris-la toi-même.";
-    if(!id){close();toast("Image illisible : "+clip(e.message,60));return}
-    draft=toDraft({},id);
+    return{id:ctx.id,a};
+  }catch(e){return{id:ctx.id,err:e}}
+}
+async function runImage(file,tid){
+  const d=document.createElement("div");d.className="ov";d.id="an";const ctx={dead:false,id:""};
+  const url=URL.createObjectURL(file);
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Analyse de l’image"><div class="h"></div><h2 class="ct" style="margin:0">Analyse de l’image</h2>
+<img src="${url}" alt="" style="max-height:200px;width:100%;object-fit:contain;border-radius:12px;background:#fff">
+<p class="mu" id="anS" role="status" style="margin:0">Préparation…</p><button class="btn gh" data-x="1">Annuler</button></div>`;
+  const close=()=>{d.remove();URL.revokeObjectURL(url);ocrSay=null};
+  d.onclick=e=>{if(e.target===d||e.target.closest("[data-x]")){ctx.dead=true;close();if(ctx.id)dropImgs([ctx.id])}};
+  document.body.append(d);
+  const st=m=>{const e=d.querySelector("#anS");if(e)e.textContent=m};
+  const r=await visAnalyse(file,st,ctx);
+  if(ctx.dead){if(r.id)dropImgs([r.id]);return}
+  let msg="";
+  if(r.err||!r.a){
+    if(!r.id){close();toast("Image illisible : "+clip(r.err?r.err.message:"",60));return}
+    msg="Analyse impossible ("+clip(r.err?r.err.message:"",60)+"). L’image est jointe : décris-la toi-même.";
+    draft=toDraft({},r.id);
+  }else{
+    msg=r.a.engine==="gemini"?"Fiche prête (Gemini). Vérifie, puis enregistre.":(r.a.found?"Fiche prête (texte lu sur l’image). Vérifie, puis enregistre.":"Aucun texte lisible : décris l’image en une phrase.");
+    draft=toDraft(r.a,r.id);
   }
   close();flushImages();go("#/e/"+tid+"/new");toast(msg,6000);
+}
+
+/* --- plusieurs images d'un coup : une fiche créée par image, puis récapitulatif --- */
+function visCreate(dr,hasTitle,tid){
+  let src="";
+  if(hasTitle){const n=dr.newSrc;src=newSource({title:n.title,kind:n.kind,url:n.url,author:n.author,year:n.year,note:n.note,cat:n.cat})}
+  let to=tid&&tid!=="auto"&&findSub(tid)?tid:"";
+  if(!to)to=commitPlace(planPlace({text:dr.text,cite:"",tags:dr.tags,src,hint:dr.place}));
+  const f=findSub(to),it=newItem({type:dr.type,text:dr.text,src,tags:dr.tags,imgs:dr.imgs,u:now()});
+  f.sub.items.unshift(it);save();
+  return{sid:to,iid:it.id,title:hasTitle?dr.newSrc.title:"Image à décrire",label:f.theme.name+" › "+f.sub.name,todo:dr.tags.includes("à décrire")};
+}
+async function runBatch(files,tid){
+  const N=files.length,d=document.createElement("div");d.className="ov";d.id="an";const ctx={dead:false,id:""};
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Import de ${N} images"><div class="h"></div><h2 class="ct" style="margin:0" id="anH">Import de ${N} images</h2>
+<img id="anI" src="" alt="" style="max-height:160px;width:100%;object-fit:contain;border-radius:12px;background:#fff">
+<p class="mu" id="anS" role="status" style="margin:0">Préparation…</p><button class="btn gh" data-x="1">Arrêter</button></div>`;
+  let url="";const close=()=>{d.remove();if(url)URL.revokeObjectURL(url);ocrSay=null};
+  d.onclick=e=>{if(e.target===d||e.target.closest("[data-x]")){ctx.dead=true;close();if(ctx.id)dropImgs([ctx.id])}};
+  document.body.append(d);
+  const q=s=>d.querySelector(s),made=[];let bad=0;
+  for(let k=0;k<N&&!ctx.dead;k++){
+    ctx.id="";if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(files[k]);
+    if(q("#anI"))q("#anI").src=url;
+    const tag="Image "+(k+1)+"/"+N+" — ";
+    if(q("#anH"))q("#anH").textContent="Image "+(k+1)+" sur "+N;
+    const r=await visAnalyse(files[k],m=>{const e=q("#anS");if(e)e.textContent=tag+m},ctx);
+    if(ctx.dead){if(r.id)dropImgs([r.id]);break}
+    if(!r.id){bad++;continue}
+    try{
+      const ok=!r.err&&r.a&&(r.a.engine==="gemini"||r.a.found),dr=toDraft(ok?r.a:{},r.id);
+      if(!ok)dr.tags=[...new Set([...dr.tags,"à décrire"])];
+      made.push(visCreate(dr,ok&&!!r.a.title,tid));
+    }catch(e){bad++;dropImgs([r.id])}
+  }
+  close();flushImages();
+  if(!made.length){toast(ctx.dead?"Import arrêté.":"Aucune image lisible.");return}
+  route();visSummary(made,bad,ctx.dead?N-made.length-bad:0);
+}
+function visSummary(made,bad,left){
+  closeSheet();const n=made.length,todo=made.filter(m=>m.todo).length;
+  const d=document.createElement("div");d.className="ov";d.id="sh";
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Fiches créées"><div class="h"></div><h2 class="ct" style="margin:0">${n} fiche${n>1?"s":""} créée${n>1?"s":""}</h2>
+<p class="mu" style="margin:0">Touche une fiche pour la vérifier ou la corriger.${todo?` ${todo} sans texte lisible : à décrire (étiquette « à décrire »).`:""}${bad?` ${bad} image${bad>1?"s":""} illisible${bad>1?"s":""}.`:""}${left>0?` ${left} non traitée${left>1?"s":""} (arrêt).`:""}</p>
+<div class="stack" style="overflow:auto">${made.map(m=>`<button class="opt" data-g="#/f/${m.sid}/${m.iid}"><span><b>${esc(clip(m.title,70))}</b><small>${esc(m.label)}${m.todo?" · à décrire":""}</small></span></button>`).join("")}</div>
+<button class="btn" data-o="done">Terminer</button></div>`;
+  d.onclick=e=>{
+    if(e.target===d){closeSheet();return}
+    const g=e.target.closest("[data-g]");if(g){closeSheet();go(g.dataset.g);return}
+    if(e.target.closest("[data-o]"))closeSheet();
+  };
+  document.body.append(d);
 }
 
 /* --- « Relire le texte de l'image » sur une fiche existante : refait l'analyse de la 1re image et remplit le formulaire --- */

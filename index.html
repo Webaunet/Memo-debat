@@ -616,20 +616,21 @@ ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<button class="c
 const STOPW=new Set("avec dans pour par sur sous cette cela celui celle ceux elles ils nous vous sont etre avoir fait faire plus moins tres aussi comme mais donc leur leurs entre vers chez sans depuis alors ainsi apres avant dont quand tout tous toute toutes autre autres meme ete etait ont the and that this with from have for are was were their which about into more than temps fois chose choses monde partie facon jour jours annee annees gens personne personnes lorsque lors selon encore toujours jamais devez doivent peuvent peut bien bon bonne quelque quelques plusieurs chaque notre votre vos nos ces ses graphique graphiques image images".split(" "));
 const nm=x=>String(x||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
 const toks=x=>(nm(x).match(/[a-z0-9]{4,}/g)||[]).filter(w=>!STOPW.has(w)).map(w=>w.slice(0,6));
-function suggestPlace(info){
+const GENTAG=new Set(["graphique","a decrire","a verifier"]),tagToks=a=>(a||[]).filter(g=>!GENTAG.has(nm(String(g)).replace(/^#/,""))).flatMap(toks);
+function suggestPlace(info,nameOnly){
   const subs=allSubs();if(!subs.length)return null;
   const N=subs.length,df=new Map(),idx=subs.map(x=>{
     const bag=new Map(),srcs=new Map(),add=(a,w)=>a.forEach(t=>bag.set(t,(bag.get(t)||0)+w));
     add(toks(x.sub.name),5);add(toks(x.theme.name),2);
-    for(const i of x.sub.items){
-      add(toks((i.text||"")+" "+(i.cite||"")),1);add((i.tags||[]).flatMap(toks),3);
+    if(!nameOnly)for(const i of x.sub.items){
+      add(toks((i.text||"")+" "+(i.cite||"")),1);add(tagToks(i.tags),3);
       if(i.src){srcs.set(i.src,(srcs.get(i.src)||0)+1);const r=srcOf(i);if(r)add(toks(r.title),1)}
     }
     for(const t of bag.keys())df.set(t,(df.get(t)||0)+1);
     return{x,bag,srcs};
   });
   const q=new Map(),add=(a,w)=>a.forEach(t=>q.set(t,Math.max(q.get(t)||0,w)));
-  add(toks((info.text||"")+" "+(info.cite||"")),1);add((info.tags||[]).flatMap(toks),3);
+  add(toks((info.text||"")+" "+(info.cite||"")),1);add(tagToks(info.tags),3);
   const r=info.src&&db.sources.find(x=>x.id===info.src);if(r)add(toks(r.title),1.5)
   let best=null;
   for(const e of idx){
@@ -642,7 +643,7 @@ function suggestPlace(info){
 function planPlace(info){
   const h=info.hint&&info.hint.sub?info.hint:null,ht=h&&db.themes.find(x=>nm(x.name)===nm(h.theme||"À classer")),he=ht&&ht.subs.find(x=>nm(x.name)===nm(h.sub));
   if(he)return{sid:he.id,label:ht.name+" › "+he.name};
-  const g=suggestPlace(info);if(g)return{sid:g.sub.id,label:g.theme.name+" › "+g.sub.name};
+  const g=suggestPlace(info,!!h&&nm(h.sub)!=="en vrac");if(g)return{sid:g.sub.id,label:g.theme.name+" › "+g.sub.name};
   if(h){const th=h.theme||"À classer";return{theme:th,sub:h.sub,label:th+" › "+h.sub+" (nouveau)"}}
   const r=info.src&&db.sources.find(x=>x.id===info.src),theme=(r&&r.cat)||"À classer",sub=r&&r.kind==="Livre"?r.title:"En vrac";
   const t=db.themes.find(x=>nm(x.name)===nm(theme)),e=t&&t.subs.find(x=>nm(x.name)===nm(sub));
@@ -785,7 +786,7 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 ${typeof gemCard==="function"?gemCard():""}
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 5g (12/11, 18 h 40)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 6 (12/11, 19 h 00)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   const lf=$("#lf");
   if(lf){
@@ -815,11 +816,11 @@ function openSheet(sid){
   const d=document.createElement("div");d.className="ov";d.id="sh";
   d.innerHTML=`<div class="sheet" role="dialog" aria-label="Ajouter une fiche"><div class="h"></div>
 <label class="lbl" for="shT" style="margin:0">Classer dans</label><select id="shT"><option value="auto"${cur==="auto"?" selected":""}>Automatique (déduit du contenu)</option>${subs.map(x=>`<option value="${x.sub.id}"${x.sub.id===cur?" selected":""}>${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("")}</select>
-<button class="opt pri" data-o="photo"><span class="ico">${ic("cam",24)}</span><span><b>Photo annotée</b><small>Une page marquée au crayon : je repère les passages</small></span></button>
+<button class="opt pri" data-o="photo"><span class="ico">${ic("cam",24)}</span><span><b>Photo annotée</b><small>Une ou plusieurs pages marquées au crayon : je repère les passages</small></span></button>
 <button class="opt" data-o="dict"><span class="ico">${ic("mic")}</span><span><b>Dicter</b><small>Je parle, le texte s’écrit</small></span></button>
 <button class="opt" data-o="paste"><span class="ico">${ic("link")}</span><span><b>Coller un texte ou un lien</b><small>Depuis le presse-papiers</small></span></button>
 <button class="opt" data-o="write"><span class="ico">${ic("edit")}</span><span><b>Écrire une fiche</b><small>Argument, exemple, chiffre, concept</small></span></button>
-<button class="opt" data-o="img"><span class="ico">${ic("img")}</span><span><b>Image ou graphique</b><small>Je lis le graphique et prépare la fiche</small></span></button></div>`;
+<button class="opt" data-o="img"><span class="ico">${ic("img")}</span><span><b>Image ou graphique</b><small>Un ou plusieurs graphiques : je lis et prépare les fiches</small></span></button></div>`;
   d.onclick=async e=>{
     if(e.target===d){closeSheet();return}
     const b=e.target.closest("[data-o]");if(!b)return;
