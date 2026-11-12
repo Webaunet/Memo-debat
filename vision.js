@@ -93,11 +93,45 @@ async function visLines(wk,img,psm){
   if(!lines.length&&d.text)d.text.split(/\n+/).forEach((t,i)=>{t=t.trim();if(t.length>=3)lines.push({text:t,conf:60,y0:i,y1:i+1,h:1})});
   return lines;
 }
+// blocs de couleur unie (rectangles pleins) : on les relit un par un, le gros texte y est bien plus fiable que sur la page entière
+function visFindBlocks(c){
+  const W=c.width,H=c.height,D=c.getContext("2d").getImageData(0,0,W,H).data,S=8,gw=Math.floor(W/S),gh=Math.floor(H/S);
+  if(gw<10||gh<10)return[];
+  const col=new Uint8Array(gw*gh*3),P=[[2,2],[5,2],[2,5],[5,5]];
+  for(let j=0;j<gh;j++)for(let i=0;i<gw;i++){let r=0,g=0,b=0;for(const[dx,dy]of P){const k=4*((j*S+dy)*W+i*S+dx);r+=D[k];g+=D[k+1];b+=D[k+2]}const o=(j*gw+i)*3;col[o]=r>>2;col[o+1]=g>>2;col[o+2]=b>>2}
+  const N=gw*gh,seen=new Uint8Array(N),st=new Int32Array(N),out=[];
+  for(let s0=0;s0<N;s0++){
+    if(seen[s0])continue;
+    const o0=s0*3,r0=col[o0],g0=col[o0+1],b0=col[o0+2];let sp=0,n=0,x0=gw,x1=0,y0=gh,y1=0;st[sp++]=s0;seen[s0]=1;
+    while(sp){
+      const p=st[--sp],px=p%gw,py=(p/gw)|0;n++;if(px<x0)x0=px;if(px>x1)x1=px;if(py<y0)y0=py;if(py>y1)y1=py;
+      for(const q of[p-1,p+1,p-gw,p+gw]){
+        if(q<0||q>=N||seen[q]||(q===p-1&&px===0)||(q===p+1&&px===gw-1))continue;
+        const o=q*3;if(Math.abs(col[o]-r0)+Math.abs(col[o+1]-g0)+Math.abs(col[o+2]-b0)<=50){seen[q]=1;st[sp++]=q}
+      }
+    }
+    const bw=x1-x0+1,bh=y1-y0+1;
+    if(n>=Math.max(24,N*0.004)&&n/(bw*bh)>=0.72&&bw>=5&&bh>=4&&!(bw>gw*0.85&&bh>gh*0.85))out.push({n,x0:x0*S,y0:y0*S,x1:(x1+1)*S,y1:(y1+1)*S});
+  }
+  return out.sort((a,b)=>b.n-a.n).slice(0,8);
+}
+async function visBlocks(wk,cv,map){
+  const out=[];
+  for(const b of visFindBlocks(cv)){
+    const x0=b.x0+3,y0=b.y0+3,x1=Math.min(cv.width,b.x1-3),y1=Math.min(cv.height,b.y1-3);
+    if(x1-x0<24||y1-y0<16)continue;
+    const c=document.createElement("canvas");c.width=x1-x0;c.height=y1-y0;
+    const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(map,x0,y0,c.width,c.height,0,0,c.width,c.height);
+    let r=[];try{r=await visLines(wk,c,"6")}catch(e){}
+    r.forEach(l=>{l.x0+=x0;l.x1+=x0;l.y0+=y0;l.y1+=y0;l.blk=1;out.push(l)});
+  }
+  return out;
+}
 function visMerge(a,b){
   const out=a.slice(),ar=l=>Math.max(0,l.x1-l.x0)*Math.max(0,l.y1-l.y0);
   for(const l of b){
     const o=out.find(o=>{const w=Math.min(o.x1,l.x1)-Math.max(o.x0,l.x0),h=Math.min(o.y1,l.y1)-Math.max(o.y0,l.y0);return w>0&&h>0&&w*h>0.5*Math.min(ar(o),ar(l))});
-    if(!o)out.push(l);else if(l.conf>o.conf+8&&l.text.length>=o.text.length*0.8)out[out.indexOf(o)]=l;
+    if(!o)out.push(l);else if((l.conf>o.conf+8&&l.text.length>=o.text.length*0.8)||(l.blk&&l.conf>=70&&l.text.length>o.text.length+2))out[out.indexOf(o)]=l;
   }
   return out;
 }
@@ -124,6 +158,8 @@ async function localAnalyse(cv){
     window.ocrExtra=" (passe "+(i+1)+"/"+vs.length+")";
     try{lines=visMerge(lines,await visLines(wk,vs[i]))}catch(e){if(!i)throw e}
   }
+  window.ocrExtra=" (blocs de couleur)";
+  try{lines=visMerge(lines,await visBlocks(wk,cv,vs[1]))}catch(e){}
   window.ocrExtra="";
   const H=cv.height,txt=l=>l.text.replace(/[^\p{L}\p{N}]/gu,""),lettr=l=>(txt(l).match(/\p{L}/gu)||[]).length/Math.max(1,txt(l).length);
   const top=lines.filter(l=>l.y0<H*0.38&&l.text.length>=8&&l.conf>=70&&lettr(l)>=0.75&&/\p{L}{3,}\s+\S+/u.test(l.text));
