@@ -79,6 +79,7 @@ textarea{resize:vertical;min-height:90px;font-family:var(--ser);font-size:16px}
 .meta>div{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:46px;padding:8px 16px;font-size:14px}
 .meta>div+div{border-top:1px solid #EEEAE0}
 .meta b{font-weight:500;text-align:right;word-break:break-word}.meta span{color:var(--mu)}
+.bigx{font-size:15px;line-height:1.55;margin:10px 0 0;white-space:pre-line;word-break:break-word}
 .big{font-family:var(--ser);font-weight:600;font-size:24px;line-height:1.3;margin:0;white-space:pre-wrap;word-break:break-word}
 .cite{font-family:var(--ser);font-style:italic;font-size:16px;line-height:1.4;color:#3A3833;margin:0;white-space:pre-wrap}
 .med img{max-width:100%;border-radius:12px}.med iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:12px}
@@ -172,6 +173,7 @@ const ic=(n,s=22)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="no
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const now=()=>new Date().toISOString();
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const bigTxt=t=>{t=String(t||"");const i=t.indexOf("\n");return i<0?`<p class="big">${esc(t)}</p>`:`<p class="big">${esc(t.slice(0,i))}</p><p class="bigx">${esc(t.slice(i+1).trim())}</p>`};
 const $=s=>document.querySelector(s);
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
@@ -601,7 +603,7 @@ function fiche(sid,iid){
   $("#app").innerHTML=`<div class="wrap">
 <div class="bar"><a href="#/t/${sid}" class="back">${ic("back")}${esc(f.sub.name)}</a><a href="#/e/${sid}/${iid}" class="btn gh" aria-label="Modifier">${ic("edit")}Modifier</a></div>
 <div class="stack" style="margin-top:6px"><span>${badge(it.type)}</span>
-<p class="big">${esc(it.text||it.url)}</p>${media(it.url)}
+${bigTxt(it.text||it.url)}${media(it.url)}
 ${it.imgs&&it.imgs.length?`<div class="gal">${it.imgs.map(i=>`<img data-img="${i}" data-a="zoom" alt="">`).join("")}</div>`:""}
 ${it.cite&&it.cite!==it.text?`<div class="card"><h2 class="sec">Citation exacte</h2><p class="cite">« ${esc(it.cite)} »</p></div>`:""}
 ${s?`<a class="srcbox" href="#/r/${s.id}"><span class="bk">${ic("book",22)}</span><span class="sp"><span class="ct" style="font-size:17px">${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind!=="Autre"?s.kind:""].filter(Boolean).join(" · "))}</span>${same?`<br><span style="font-size:13px;color:var(--pr);font-weight:500">${same} autre${same>1?"s":""} fiche${same>1?"s":""} de cette source</span>`:""}</span>${ic("chev",18)}</a>`:""}
@@ -781,7 +783,7 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 ${typeof gemCard==="function"?gemCard():""}
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · version 2</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 5f (12/11, 18 h)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   const lf=$("#lf");
   if(lf){
