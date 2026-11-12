@@ -67,7 +67,7 @@ function ocrVersions(c){
   const mk=()=>{const k=document.createElement("canvas");k.width=W;k.height=H;const x=k.getContext("2d");return{k,x,i:x.createImageData(W,H)}};
   const G=mk(),M=mk(),gd=G.i.data,md=M.i.data;
   for(let i=0;i<N;i++){const v=(src[4*i]*299+src[4*i+1]*587+src[4*i+2]*114)/1000;gd[4*i]=gd[4*i+1]=gd[4*i+2]=v;gd[4*i+3]=255}
-  const BS=16,bw=Math.ceil(W/BS),bh=Math.ceil(H/BS),bg=new Uint8Array(bw*bh*3),buf=[new Uint8Array(64),new Uint8Array(64),new Uint8Array(64)];
+  const BS=32,bw=Math.ceil(W/BS),bh=Math.ceil(H/BS),bg=new Uint8Array(bw*bh*3),buf=[new Uint8Array(256),new Uint8Array(256),new Uint8Array(256)];
   for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){
     let n=0;for(let y=by*BS;y<Math.min(H,by*BS+BS);y+=2)for(let x=bx*BS;x<Math.min(W,bx*BS+BS);x+=2){const k=4*(y*W+x);buf[0][n]=src[k];buf[1][n]=src[k+1];buf[2][n]=src[k+2];n++}
     for(let ch=0;ch<3;ch++){const s=buf[ch].subarray(0,n).sort();bg[(by*bw+bx)*3+ch]=s[n>>1]}
@@ -81,8 +81,8 @@ function ocrVersions(c){
   G.x.putImageData(G.i,0,0);M.x.putImageData(M.i,0,0);
   return[G.k,M.k];
 }
-async function visLines(wk,img){
-  await wk.setParameters({tessedit_pageseg_mode:"11"});
+async function visLines(wk,img,psm){
+  await wk.setParameters({tessedit_pageseg_mode:psm||"11"});
   let d;try{d=(await wk.recognize(img)).data||{}}finally{await wk.setParameters({tessedit_pageseg_mode:"3"})}
   const lines=[];
   for(const b of d.blocks||[])for(const p of b.paragraphs||[])for(const l of p.lines||[]){
@@ -101,6 +101,21 @@ function visMerge(a,b){
   }
   return out;
 }
+// relit une ligne de titre seule (recadrée, agrandie ×2, en 1 ligne) : récupère par ex. « 44 % » lu « © » dans un bandeau coloré
+async function visRefine(wk,gray,l,cv){
+  const ml=Math.round(cv.width*0.1),mr=Math.round(cv.width*0.012),my=Math.round(l.h*0.35),x0=Math.max(0,l.x0-ml),y0=Math.max(0,l.y0-my),x1=Math.min(cv.width,l.x1+mr),y1=Math.min(cv.height,l.y1+my);
+  if(x1-x0<20||y1-y0<10)return"";
+  const c=document.createElement("canvas");c.width=(x1-x0)*2;c.height=(y1-y0)*2;
+  const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(gray,x0,y0,x1-x0,y1-y0,0,0,c.width,c.height);
+  let r;try{r=await visLines(wk,c,"7")}catch(e){return""}
+  if(!r.length)return"";
+  const t=r.map(x=>x.text).join(" ").replace(/^[\s|\[\]]+|[\s|\[\]]+$/g,"").trim(),cf=r.reduce((a,x)=>a+x.conf,0)/r.length,w=l.text.split(" "),tail=w.slice(1).join(" "),head=w.slice(0,-1).join(" ");
+  let out="";
+  if(tail.length>=8){const i=t.indexOf(tail);if(i>0&&i<=14)out=t.slice(0,i)+tail}
+  if(!out&&head.length>=8&&t.startsWith(head)&&t.length-head.length<=14)out=t;
+  return cf>=70&&out.length>l.text.length?out:"";
+}
+const pct=t=>t.trim().replace(/\s*%$/," %");
 async function localAnalyse(cv){
   const wk=await getOcr(),vs=ocrVersions(cv);let lines=[];
   for(let i=0;i<vs.length;i++){
@@ -113,11 +128,14 @@ async function localAnalyse(cv){
   let title="",tl=null;
   if(top.length){
     const m=Math.max(...top.map(l=>l.h)),big=top.filter(l=>l.h>=m*0.8).sort((a,b)=>a.y0-b.y0);
-    let cur=big[0];title=cur.text;tl=cur;
-    for(const l of big.slice(1)){if(l.y0-cur.y1<Math.max(cur.h,1)*1.4){title+=" "+l.text;cur=l;tl=l}else break}
+    let cur=big[0];const grp=[cur];tl=cur;
+    for(const l of big.slice(1)){if(l.y0-cur.y1<Math.max(cur.h,1)*1.4){grp.push(l);cur=l;tl=l}else break}
+    for(const l of grp){try{const t=await visRefine(wk,vs[0],l,cv);if(t)l.text=t}catch(e){}}
+    title=grp.map(l=>l.text).join(" ");
     // sous-titre : ligne plus petite juste sous le titre
     var subt=lines.filter(l=>l!==cur&&l.y0>=tl.y1-2&&l.y0-tl.y1<tl.h*2.2&&l.h<=m*0.8&&l.h>=m*0.3&&l.conf>=70&&l.text.length>=18&&lettr(l)>=0.75).sort((a,b)=>a.y0-b.y0)[0];
   }
+  const subt2=subt&&lines.find(l=>l!==subt&&l.y0>=subt.y1-2&&l.y0-subt.y1<subt.h*1.2&&Math.abs(l.h-subt.h)<=subt.h*0.3&&Math.abs(l.x0-subt.x0)<cv.width*0.03&&l.conf>=70&&l.text.length>=18&&lettr(l)>=0.75);
   if(!title&&lines.length)title=lines.slice().sort((a,b)=>b.h-a.h)[0].text;
   const sRe=/^\s*(sources?|d['’]apr[eè]s|donn[eé]es|cr[eé]dit)\b\s*[:\-–.]?\s*(.*)$/i,sl=lines.find(l=>sRe.test(l.text)),source=sl?(sl.text.replace(sRe,"$2").trim()||sl.text):"";
   const lab=lines.filter(l=>l!==sl&&!title.includes(l.text)&&/\d/.test(l.text)&&/\p{L}{2,}/u.test(l.text)&&l.text.length>=5&&l.text.length<=70)
@@ -130,7 +148,7 @@ async function localAnalyse(cv){
     const used=new Set();
     for(const v of vals.slice().sort((a,b)=>cx(a)-cx(b))){
       let best=null,bd=1e9;for(const y of yrs){if(used.has(y))continue;const dd=Math.abs(cx(y)-cx(v));if(dd<bd){bd=dd;best=y}}
-      if(best&&bd<cv.width*0.12){used.add(best);paired.push({x:cx(v),t:best.text.trim()+" : "+v.text.trim()})}
+      if(best&&bd<cv.width*0.12){used.add(best);paired.push({x:cx(v),t:best.text.trim()+" : "+pct(v.text)})}
     }
   }
   let lp=[];
@@ -144,14 +162,14 @@ async function localAnalyse(cv){
         else if(Math.abs((L.y0+L.y1)/2-(v.y0+v.y1)/2)<hh*0.6&&L.x1<=v.x0+hh*0.3&&v.x0-L.x1<hh*4)dd=Math.hypot(v.x0-L.x1,0)+hh;
         if(dd<bd){bd=dd;best=L}
       }
-      if(best)lp.push({v,y:v.y0,x:v.x0,t:best.text.replace(/[\s:]+$/,"")+" : "+v.text.trim()});
+      if(best)lp.push({v,y:v.y0,x:v.x0,t:best.text.replace(/[\s:]+$/,"").replace(/^[^\p{L}\p{N}]+/u,"")+" : "+pct(v.text)});
     }
     if(lp.length){const mh=Math.max(...lp.map(p=>p.v.h));lp=lp.filter(p=>p.v.h>=mh*0.75).sort((a,b)=>a.y-b.y||a.x-b.x)}
   }
-  const fig=(paired.length>=2?paired.sort((a,b)=>a.x-b.x).map(p=>p.t):lp.length?lp.map(p=>p.t):[...vals.slice(0,6).map(v=>v.text.trim()),...lab]).slice(0,8);
-  const all=lines.map(l=>l.text).join(" "),yr=(source+" "+title).match(/\b(?:19|20)\d{2}\b/);
+  const fig=(paired.length>=2?paired.sort((a,b)=>a.x-b.x).map(p=>p.t):lp.length?lp.map(p=>p.t):[...vals.slice(0,6).map(v=>pct(v.text)),...lab]).slice(0,8);
+  const all=lines.map(l=>l.text).join(" "),yr=(source+" "+title+" "+(subt?subt.text:"")+" "+(subt2?subt2.text:"")).match(/\b(?:19|20)\d{2}\b/);
   const words=[...new Set((title.toLowerCase().match(/\p{L}{5,}/gu)||[]))].slice(0,3);
-  return{title:clip(title,120),subtitle:subt?clip(subt.text,140):"",summary:"",figures:fig,sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([all]),sub:(()=>{const p=title.split(/\s*:\s/)[0].trim();return p.length>=6&&p.length<=50&&p!==title?p:title.length>=6&&title.length<=45?title:""})(),tags:words,type:"chi",engine:"local",found:lines.length};
+  return{title:clip(title,120),subtitle:subt?clip(subt.text+(subt2?" "+subt2.text:""),200):"",summary:"",figures:fig,sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([all]),sub:(()=>{const p=title.split(/\s*:\s/)[0].trim();return p.length>=6&&p.length<=50&&p!==title?p:title.length>=6&&title.length<=45?title:""})(),tags:words,type:"chi",engine:"local",found:lines.length};
 }
 
 /* --- brouillon de fiche --- */
