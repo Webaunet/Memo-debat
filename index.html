@@ -101,7 +101,7 @@ textarea{resize:vertical;min-height:90px;font-family:var(--ser);font-size:16px}
 .rm{position:absolute;top:-6px;right:-6px;width:28px;height:28px;border-radius:50%;background:var(--tx);color:#fff;text-align:center;line-height:26px;font-size:18px;padding:0}
 .cimg{width:100%;max-height:200px;object-fit:cover;border-radius:12px;display:block;background:#e9e6df}
 .gal{display:flex;flex-direction:column;gap:10px}.gal img{width:100%;min-height:60px;border-radius:12px;display:block;cursor:zoom-in;background:#e9e6df}
-.lb{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;padding:10px}.lb img{max-width:100%;max-height:100%;object-fit:contain}
+.lb{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;padding:10px}.lb img{max-width:100%;max-height:100%;object-fit:contain}.lbx{position:fixed;top:max(12px,env(safe-area-inset-top));right:12px;width:48px;height:48px;border-radius:50%;border:0;background:rgba(255,255,255,.22);color:#fff;font:400 34px/1 Inter,sans-serif;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:51;padding:0}
 /* antisèche (sombre) */
 .dk{color:#F2EFE8}
 .dk .back,.dk .mu,.dk .src{color:#A9A69D}
@@ -893,7 +893,7 @@ document.addEventListener("click",e=>{
   }
   else if(a==="addimg")pickImgs(ids=>{fImgs.push(...ids);drawFI()});
   else if(a==="rmimg"){fImgs=fImgs.filter(x=>x!==iid);drawFI()}
-  else if(a==="zoom"){if(!b.getAttribute("src"))return;const l=document.createElement("div");l.className="lb";l.innerHTML=`<img src="${b.getAttribute("src")}" alt="">`;l.onclick=()=>l.remove();document.body.append(l)}
+  else if(a==="zoom"){if(!b.getAttribute("src"))return;const l=document.createElement("div");l.className="lb";l.innerHTML=`<img src="${b.getAttribute("src")}" alt=""><button type="button" class="lbx" aria-label="Fermer l’image">×</button>`;const kd=e=>{if(e.key==="Escape")cl()},cl=()=>{l.remove();document.removeEventListener("keydown",kd)};l.onclick=cl;document.addEventListener("keydown",kd);document.body.append(l)}
   else if(a==="share"){
     const f=findSub(sid),it=f.sub.items.find(x=>x.id===iid),txt=[it.text,it.cite&&it.cite!==it.text?"« "+it.cite+" »":"",srcLabel(it)?"— "+srcLabel(it):"",it.url].filter(Boolean).join("\n");
     if(navigator.share)navigator.share({text:txt}).catch(()=>{});
