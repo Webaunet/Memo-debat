@@ -215,8 +215,15 @@ const srcOf=it=>db.sources.find(s=>s.id===it.src);
 function pageLabel(it){const s=srcOf(it);if(!it.page)return"";return s&&(s.kind==="Podcast"||s.kind==="Vidéo")?"à "+it.page:(/^\d/.test(it.page)?"p. ":"")+it.page}
 const srcLabel=it=>{const s=srcOf(it);return[s?s.title:"",pageLabel(it)].filter(Boolean).join(" · ")};
 const fmtDate=d=>d&&/^\d{4}-\d\d-\d\d$/.test(d)?d.split("-").reverse().join("/"):d||"";
-const nItems=s=>s.items.length;
-const nStar=s=>s.items.filter(i=>i.star).length;
+// une fiche vit dans un sujet (sub.items) et peut apparaître dans d'autres (it.also = [id de sujet]) sans être dupliquée
+const subItems=sub=>[...sub.items.map(i=>[i,sub.id]),...allSubs().flatMap(x=>x.sub===sub?[]:x.sub.items.filter(i=>(i.also||[]).includes(sub.id)).map(i=>[i,x.sub.id]))];
+const locate=iid=>{for(const x of allSubs()){const it=x.sub.items.find(i=>i.id===iid);if(it)return{theme:x.theme,sub:x.sub,it}}return null};
+const nItems=s=>subItems(s).length;
+const nStar=s=>subItems(s).filter(x=>x[0].star).length;
+// corbeille : fiches supprimées gardées 30 jours (avec leurs images), restaurables
+function unAlso(sid){allSubs().forEach(x=>x.sub.items.forEach(i=>{if((i.also||[]).includes(sid))i.also=i.also.filter(y=>y!==sid)}))}
+function toTrash(it,f){db.trash=db.trash||[];db.trash.unshift({it,sid:f.sub.id,sub:f.sub.name,theme:f.theme.name,at:now()})}
+function purgeTrash(){const lim=Date.now()-30*864e5,old=(db.trash||[]).filter(x=>new Date(x.at).getTime()<lim);if(!old.length)return;dropImgs(old.flatMap(x=>x.it.imgs||[]));db.trash=db.trash.filter(x=>!old.includes(x));save()}
 const safeUrl=u=>/^https?:\/\//i.test(u||"")?u:"";
 function media(u){
   u=safeUrl(u);if(!u)return"";
@@ -294,7 +301,7 @@ async function dropImgs(ids){
 async function gcImgs(){
   try{
     if(!hasData(db)||(auth&&!meta.synced))return;
-    const used=new Set(allSubs().flatMap(x=>x.sub.items.flatMap(i=>i.imgs||[])));
+    const used=new Set([...allSubs().flatMap(x=>x.sub.items.flatMap(i=>i.imgs||[])),...(db.trash||[]).flatMap(x=>x.it.imgs||[])]);
     for(const r of await idbAll())if(!used.has(r.id)&&Date.now()-(r.t||0)>864e5)await dropImgs([r.id]);
   }catch(e){}
 }
@@ -352,7 +359,7 @@ function exportDocx(d){if(!d.items.length){toast("Aucune fiche à exporter.");re
 /* ===== Lien de partage en lecture seule (un sujet, copie figée, sans images) ===== */
 const rid=()=>{const a=new Uint8Array(12);crypto.getRandomValues(a);return[...a].map(x=>x.toString(36).padStart(2,"0").slice(-2)).join("")};
 const shareLink=id=>location.origin+location.pathname+"#/p/"+id;
-function shareSnapshot(f,all){return{v:1,theme:f.theme.name,name:f.sub.name,at:now(),items:f.sub.items.filter(i=>all||i.star).map(i=>pubItem(i))}}
+function shareSnapshot(f,all){return{v:1,theme:f.theme.name,name:f.sub.name,at:now(),items:subItems(f.sub).map(x=>x[0]).filter(i=>all||i.star).map(i=>pubItem(i))}}
 async function pushShare(f,all){
   const tk=await token(),id=f.sub.share?f.sub.share.id:rid();
   await sb("/rest/v1/shares?on_conflict=id",{method:"POST",token:tk,prefer:"resolution=merge-duplicates,return=minimal",body:{id,user_id:auth.user.id,sub_id:f.sub.id,title:f.sub.name,data:shareSnapshot(f,all)}});
@@ -607,7 +614,7 @@ function search(q){
 let navCtx=null,lastQ="",keepQ=false;
 function navOf(sid,iid){
   let ids=navCtx&&navCtx.ids.some(x=>x[1]===iid)?navCtx.ids:null,name=ids?navCtx.name:"";
-  if(!ids){const f=findSub(sid);if(!f)return null;ids=f.sub.items.map(i=>[sid,i.id]);name=f.sub.name}
+  if(!ids){const f=findSub(sid);if(!f)return null;ids=subItems(f.sub).map(x=>[x[1],x[0].id]);name=f.sub.name}
   ids=ids.filter(x=>{const f=findSub(x[0]);return f&&f.sub.items.some(i=>i.id===x[1])});
   const k=ids.findIndex(x=>x[1]===iid);return k<0?null:{k,n:ids.length,ids,name};
 }
@@ -657,21 +664,23 @@ ${t.subs.map(s=>`<a class="card row" href="#/t/${s.id}"><span class="sp"><span c
 let flt="all";
 function subPage(id){
   const f=findSub(id);if(!f)return go("#/");
-  const{theme,sub}=f,types=[...new Set(sub.items.map(i=>i.type))];
+  const{theme,sub}=f,pairs=subItems(sub),types=[...new Set(pairs.map(x=>x[0].type))];
   if(flt!=="all"&&flt!=="star"&&!types.includes(flt))flt="all";
-  const items=sub.items.filter(i=>flt==="all"||(flt==="star"?i.star:i.type===flt));
-  navCtx={name:sub.name,ids:items.map(i=>[id,i.id])};
+  const items=pairs.filter(([i])=>flt==="all"||(flt==="star"?i.star:i.type===flt));
+  navCtx={name:sub.name,ids:items.map(([i,h])=>[h,i.id])};
   $("#app").innerHTML=`<div class="wrap">
 <div class="bar"><a href="#/h/${theme.id}" class="back">${ic("back")}${esc(theme.name)}</a><a href="#/a/${id}" class="btn hl" style="min-height:40px;border-radius:99px;font-size:14px">${ic("star",16)}Antisèche</a></div>
 <h1 class="ser">${esc(sub.name)}</h1>
 <p class="mu" style="margin:4px 0 0">${nItems(sub)} fiche${nItems(sub)>1?"s":""} · ${nStar(sub)} en antisèche <button class="btn gh" data-a="renSub" data-s="${id}" style="min-height:28px">Renommer</button><button class="btn gh dg" data-a="delSub" data-s="${id}" style="min-height:28px">Supprimer</button></p>
 <div class="chips" style="margin-top:10px"><button class="chip sm" data-a="shareSub" data-s="${id}">Partager le sujet</button><button class="chip sm" data-a="docSub" data-s="${id}">Exporter en Word</button></div>
 <div class="chips scroll" style="margin-top:12px"><button class="chip ${flt==="all"?"on":""}" data-a="flt" data-f="all">Tout</button><button class="chip ${flt==="star"?"on":""}" data-a="flt" data-f="star">En antisèche</button>${types.map(c=>`<button class="chip ${flt===c?"on":""}" data-a="flt" data-f="${c}">${typeOf(c)[1]}</button>`).join("")}</div>
-<div class="stack">${items.map(i=>itemCard(i,id)).join("")||'<p class="mu">Rien ici pour le moment. Touche + pour ajouter une fiche.</p>'}</div>
+<div class="stack">${items.map(([i,h])=>itemCard(i,h,h!==id?"Aussi dans ce sujet":"")).join("")||'<p class="mu">Rien ici pour le moment. Touche + pour ajouter une fiche.</p>'}</div>
 </div>${fab(id)}${tabs("h")}`;
 }
 function fiche(sid,iid){
-  const f=findSub(sid),it=f&&f.sub.items.find(x=>x.id===iid);if(!it)return go(f?"#/t/"+sid:"#/");
+  let f=findSub(sid),it=f&&f.sub.items.find(x=>x.id===iid);
+  if(!it){const L=locate(iid);if(!L)return go(f?"#/t/"+sid:"#/");f=L;it=L.it;sid=L.sub.id}
+  const also=(it.also||[]).map(findSub).filter(Boolean),lk=linksOf(it);
   const s=srcOf(it),same=s?allSubs().reduce((n,x)=>n+x.sub.items.filter(i=>i.src===s.id&&i.id!==it.id).length,0):0;
   const row=(k,v)=>v?`<div><span>${k}</span><b>${v}</b></div>`:"",nv=navOf(sid,iid);
   $("#app").innerHTML=`<div class="wrap" style="padding-bottom:${nv&&nv.n>1?250:170}px">
@@ -683,8 +692,53 @@ ${it.cite&&it.cite!==it.text?`<div class="card"><h2 class="sec">Citation exacte<
 ${s?`<a class="srcbox" href="#/r/${s.id}"><span class="bk">${ic("book",22)}</span><span class="sp"><span class="ct" style="font-size:17px">${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind!=="Autre"?s.kind:""].filter(Boolean).join(" · "))}</span>${same?`<br><span style="font-size:13px;color:var(--pr);font-weight:500">${same} autre${same>1?"s":""} fiche${same>1?"s":""} de cette source</span>`:""}</span>${ic("chev",18)}</a>`:""}
 ${it.page||it.verified||it.url?`<div class="meta">${row("Page / minutage",esc(pageLabel(it)))}${row("Vérifié le",esc(fmtDate(it.verified)))}${it.url?`<div><span>Lien</span><b>${safeUrl(it.url)?`<a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,40))}</a>`:esc(it.url.slice(0,40))}</b></div>`:""}</div>`:""}
 ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<button class="chip sm" data-a="tag" data-t="${esc(t)}">#${esc(t)}</button>`).join("")}</div>`:""}
+${also.length?`<p class="mu" style="margin:0">Aussi dans : ${also.map(x=>`<a href="#/t/${x.sub.id}" style="color:var(--pr)">${esc(x.theme.name)} › ${esc(x.sub.name)}</a>`).join(", ")}</p>`:""}
+<div class="bar" style="margin-top:6px"><h2 class="sec">Fiches liées${lk.length?" ("+lk.length+")":""}</h2><button class="lnk" data-a="link" data-s="${sid}" data-i="${iid}">Lier une fiche</button></div>
+${lk.map(x=>`<div class="lkw">${itemCard(x.it,x.sub.id,x.theme.name+" › "+x.sub.name)}<button class="btn gh" data-a="unlink" data-s="${sid}" data-i="${iid}" data-t="${x.it.id}">Retirer le lien</button></div>`).join("")}
+${it.hist&&it.hist.length?`<button class="btn gh" data-a="hist" data-s="${sid}" data-i="${iid}" style="align-self:flex-start">${ic("edit",18)}Versions précédentes (${it.hist.length})</button>`:""}
 </div></div>
 <div class="bb">${nv&&nv.n>1?`<div class="nv"><button class="btn" data-a="nav" data-d="-1"${nv.k<=0?" disabled":""} aria-label="Fiche précédente"><span class="rot">${ic("chev",20)}</span>Précédente</button><span class="pos" aria-live="polite">${nv.k+1} / ${nv.n}</span><button class="btn" data-a="nav" data-d="1"${nv.k>=nv.n-1?" disabled":""} aria-label="Fiche suivante">Suivante${ic("chev",20)}</button></div>`:""}<div><button class="btn hl" data-a="star2" data-s="${sid}" data-i="${iid}">${ic("star",20)}${it.star?"Dans l’antisèche":"Antisèche"}</button><button class="btn" style="flex:0 1 112px;padding:0 10px" data-a="share" data-s="${sid}" data-i="${iid}">${ic("share",20)}Partager</button><a class="btn ic1" href="#/e/${sid}/${iid}" aria-label="Modifier">${ic("edit",22)}</a></div></div>`;
+}
+// liens entre fiches : enregistrés d'un côté (it.links), affichés des deux côtés
+function linksOf(it){const ids=new Set(it.links||[]);allSubs().forEach(x=>x.sub.items.forEach(i=>{if((i.links||[]).includes(it.id))ids.add(i.id)}));ids.delete(it.id);return[...ids].map(locate).filter(Boolean)}
+function linkSheet(sid,iid){
+  const L=locate(iid);if(!L)return;closeSheet();
+  const d=document.createElement("div");d.className="ov";d.id="sh";
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Lier une fiche"><div class="h"></div><h2 class="ct" style="margin:0">Lier une fiche</h2>
+<p class="mu" style="margin:0">Une réponse, un contre-argument, un exemple… Cherche la fiche à relier.</p>
+<div class="srch">${ic("search")}<input id="lq" type="search" placeholder="Un mot de la fiche…" aria-label="Chercher la fiche à lier"></div>
+<div id="lr" class="stack" style="overflow:auto;margin:0"></div><button class="btn" data-o="x">Fermer</button></div>`;
+  const has=new Set(linksOf(L.it).map(x=>x.it.id));
+  const show=()=>{const v=$("#lq").value.trim(),r=(v?search(v):allSubs().flatMap(x=>x.sub.items.map(i=>[i,x.sub.id,x.theme.name+" › "+x.sub.name])).sort((a,b)=>(b[0].u||0)-(a[0].u||0))).filter(x=>x[0].id!==iid&&!has.has(x[0].id)).slice(0,30);
+    $("#lr").innerHTML=r.map(x=>`<button class="opt" data-l="${x[0].id}"><span><b>${esc(clip(x[0].text||x[0].url,90))}</b><small>${esc(x[2])}</small></span></button>`).join("")||'<p class="mu">Aucune fiche.</p>'};
+  d.onclick=e=>{
+    if(e.target===d||e.target.closest("[data-o]")){closeSheet();return}
+    const b=e.target.closest("[data-l]");if(!b)return;
+    L.it.links=[...new Set([...(L.it.links||[]),b.dataset.l])];L.it.u=now();save();closeSheet();fiche(sid,iid);toast("Fiches liées.");
+  };
+  document.body.append(d);$("#lq").oninput=show;show();
+}
+const HK=["type","text","cite","src","page","verified","url","tags"];
+function histSheet(sid,iid){
+  const L=locate(iid);if(!L||!(L.it.hist||[]).length)return;closeSheet();
+  const d=document.createElement("div");d.className="ov";d.id="sh";
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Versions précédentes"><div class="h"></div><h2 class="ct" style="margin:0">Versions précédentes</h2>
+<div class="stack" style="overflow:auto;margin:0">${L.it.hist.map((h,k)=>`<div class="card"><p class="mu" style="margin:0">${esc(new Date(h.at).toLocaleString("fr-FR",{dateStyle:"short",timeStyle:"short"}))}</p><p style="margin:6px 0;white-space:pre-wrap">${esc(clip(h.text||h.url||"",400))}</p><button class="btn" data-k="${k}">Restaurer cette version</button></div>`).join("")}</div>
+<button class="btn" data-o="x">Fermer</button></div>`;
+  d.onclick=e=>{
+    if(e.target===d||e.target.closest("[data-o]")){closeSheet();return}
+    const b=e.target.closest("[data-k]");if(!b)return;
+    const h=L.it.hist[+b.dataset.k],cur={at:L.it.u||now()};HK.forEach(k=>{cur[k]=L.it[k]});
+    HK.forEach(k=>{if(k in h)L.it[k]=h[k]});L.it.hist=[cur,...L.it.hist.filter(x=>x!==h)].slice(0,10);L.it.u=now();save();closeSheet();fiche(sid,iid);toast("Version restaurée (l’ancienne est gardée dans l’historique).");
+  };
+  document.body.append(d);
+}
+function trashPage(){
+  const T=db.trash||[];
+  $("#app").innerHTML=`<div class="wrap"><div class="bar"><a href="#/c" class="back">${ic("back")}Compte</a>${T.length?`<button class="btn gh dg" data-a="trEmpty">Vider</button>`:""}</div>
+<h1 class="ser">Corbeille</h1><p class="mu" style="margin:4px 0 0">Les fiches supprimées sont gardées 30 jours, avec leurs images.</p>
+<div class="stack">${T.map((x,k)=>`<div class="card it"><div class="top">${badge(x.it.type)}<span class="mu" style="font-size:13px">${esc(new Date(x.at).toLocaleDateString("fr-FR"))}</span></div><p class="txt">${esc(x.it.text||x.it.url)}</p><div class="src">${ic("book",16)}<span>${esc(x.theme+" › "+x.sub)}</span></div>
+<div class="row"><button class="btn sp" data-a="trBack" data-t="${k}">Restaurer</button><button class="btn gh dg" data-a="trDel" data-t="${k}">Supprimer définitivement</button></div></div>`).join("")||'<p class="mu">La corbeille est vide.</p>'}</div></div>${tabs("c")}`;
 }
 /* ===== Classement automatique (sans IA : mots-clés, même livre, thème du livre) ===== */
 const STOPW=new Set("avec dans pour par sur sous cette cela celui celle ceux elles ils nous vous sont etre avoir fait faire plus moins tres aussi comme mais donc leur leurs entre vers chez sans depuis alors ainsi apres avant dont quand tout tous toute toutes autre autres meme ete etait ont the and that this with from have for are was were their which about into more than temps fois chose choses monde partie facon jour jours annee annees gens personne personnes lorsque lors selon encore toujours jamais devez doivent peuvent peut bien bon bonne quelque quelques plusieurs chaque notre votre vos nos ces ses graphique graphiques image images".split(" "));
@@ -742,6 +796,7 @@ function editPage(sid,iid){
 <h1 class="ser">${isNew?"Nouvelle fiche":"Modifier la fiche"}</h1>
 <form id="ef" autocomplete="off">
 <label class="lbl" for="fS">Sujet</label><select id="fS">${subSel}</select><p class="mu" id="fSH" style="margin:4px 0 0;min-height:18px"></p>
+<details id="fA" class="card"${(d.also||[]).length?" open":""}><summary>Aussi dans d’autres sujets${(d.also||[]).length?" ("+d.also.length+")":""}</summary><div class="stack" style="margin:8px 0 0;gap:6px">${allSubs().map(x=>`<label class="chk"><input type="checkbox" value="${x.sub.id}"${(d.also||[]).includes(x.sub.id)?" checked":""}> ${esc(x.theme.name)} › ${esc(x.sub.name)}</label>`).join("")}</div></details>
 <label class="lbl" for="fT">Type</label><select id="fT">${TYPES.map(x=>`<option value="${x[0]}"${x[0]===(d.type||lsGet("memoLastType")||"arg")?" selected":""}>${x[1]}</option>`).join("")}</select>
 <label class="lbl" for="fX">Texte (une idée = une fiche)</label><textarea id="fX" rows="5">${esc(d.text||"")}</textarea>
 <button type="button" class="btn" data-a="dictate" style="margin-top:6px;min-height:44px">${ic("mic",18)}Dicter</button>
@@ -777,10 +832,12 @@ function editPage(sid,iid){
     if(src==="__new"){const t=$("#fNT").value.trim();const ns=d.newSrc||window.rereadNS||{};src=t?newSource({title:t,kind:$("#fNK").value,url:ns.url||"",author:ns.author||"",year:ns.year||"",note:ns.note||"",cat:ns.cat||""}):""}
     const tags=[...new Set($("#fG").value.split(",").map(x=>x.trim().replace(/^#/,"")).filter(Boolean))];
     const vals={type:$("#fT").value,text,cite:$("#fC").value.trim(),src,page:$("#fP").value.trim(),verified:$("#fV").value,url,tags,imgs:[...fImgs],u:now()};
+    const alsoSel=[...document.querySelectorAll("#fA input:checked")].map(x=>x.value);
     const removed=isNew?[]:(it.imgs||[]).filter(x=>!fImgs.includes(x));
     let to=$("#fS").value,placed="";
     if(to==="__auto"){const pl=planPlace({text,cite:vals.cite,tags,src,hint:d.place});to=commitPlace(pl);placed=pl.label.replace(" (nouveau)","")}
-    const tf=findSub(to);
+    const tf=findSub(to);vals.also=alsoSel.filter(x=>x!==to);
+    if(!isNew&&HK.some(k=>JSON.stringify(it[k]??"")!==JSON.stringify(vals[k]??""))){const h={at:it.u||now()};HK.forEach(k=>{h[k]=it[k]});it.hist=[h,...(it.hist||[])].slice(0,10)}
     if(isNew)tf.sub.items.unshift(newItem(vals));
     else{Object.assign(it,vals);if(to!==sid){f.sub.items=f.sub.items.filter(x=>x!==it);tf.sub.items.unshift(it)}}
     dropImgs(removed);
@@ -832,7 +889,7 @@ function cheat(id){
   const subs=id==="all"?allSubs():[findSub(id)].filter(Boolean);
   if(!subs.length)return go("#/a");
   const title=id==="all"?"Toutes les fiches":subs[0].sub.name;
-  const all=subs.flatMap(x=>x.sub.items.filter(i=>i.star).map(i=>[i,x.sub.id,id==="all"?x.sub.name:""]));
+  const all=id==="all"?subs.flatMap(x=>x.sub.items.filter(i=>i.star).map(i=>[i,x.sub.id,x.sub.name])):subItems(subs[0].sub).filter(([i])=>i.star).map(([i,h])=>[i,h,""]);
   $("#app").innerHTML=`<div class="dk"><div class="wrap">
 <div class="bar"><a href="#/a" class="back">${ic("back")}Quitter</a><span class="pill">Mode débat</span></div>
 <h1 class="ser" style="margin-top:6px">${esc(title)}</h1>
@@ -858,9 +915,10 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 <div id="lM" class="mu" role="status"></div>
 <div class="row"><button class="btn pri sp" type="submit">Se connecter</button><button class="btn" type="button" data-a="signup">Créer le compte</button></div></form>`}
 ${typeof gemCard==="function"?gemCard():""}
+<a class="card row" href="#/x"><span class="sp"><b>Corbeille</b><br><span class="mu">Fiches supprimées, gardées 30 jours</span></span><span class="cnt">${(db.trash||[]).length}</span>${ic("chev",18)}</a>
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 9 (23/11, 23 h 30)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 10 (24/11)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   const lf=$("#lf");
   if(lf){
@@ -925,6 +983,7 @@ function route(){
   else if(k==="r"&&p[1])sourcePage(p[1]);
   else if(k==="a")p[1]?cheat(p[1]):debatePicker();
   else if(k==="c")accountPage();
+  else if(k==="x")trashPage();
   else if(k==="p"&&p[1])sharePage(p[1]);
   else home();
 }
@@ -948,10 +1007,10 @@ document.addEventListener("click",e=>{
   if(a==="sheet")openSheet(sid);
   else if(a==="addTheme"){const n=prompt("Nom du thème (ex. Écologie, Travail…)");if(n&&n.trim()){const t={id:uid(),name:n.trim(),u:now(),subs:[]};db.themes.push(t);save();go("#/h/"+t.id)}}
   else if(a==="renTheme"){const t=db.themes.find(x=>x.id===tid),n=prompt("Nouveau nom",t.name);if(n&&n.trim()){t.name=n.trim();t.u=now();save();themePage(tid)}}
-  else if(a==="delTheme"){const t=db.themes.find(x=>x.id===tid);if(confirm("Supprimer le thème « "+t.name+" », ses sujets et toutes leurs fiches ?")){dropImgs(t.subs.flatMap(s=>s.items.flatMap(i=>i.imgs||[])));db.themes=db.themes.filter(x=>x!==t);save();go("#/")}}
+  else if(a==="delTheme"){const t=db.themes.find(x=>x.id===tid);if(confirm("Supprimer le thème « "+t.name+" » et ses sujets ? Les fiches iront dans la corbeille (30 jours).")){t.subs.forEach(s=>{s.items.forEach(i=>toTrash(i,{sub:s,theme:t}));unAlso(s.id)});db.themes=db.themes.filter(x=>x!==t);save();go("#/")}}
   else if(a==="addSub"){const t=db.themes.find(x=>x.id===tid),n=prompt("Nom du sujet (ex. Temps de travail)");if(n&&n.trim()){const s={id:uid(),name:n.trim(),u:now(),items:[]};t.subs.push(s);save();go("#/t/"+s.id)}}
   else if(a==="renSub"){const f=findSub(sid),n=prompt("Nouveau nom",f.sub.name);if(n&&n.trim()){f.sub.name=n.trim();f.sub.u=now();save();subPage(sid)}}
-  else if(a==="delSub"){const f=findSub(sid);if(confirm("Supprimer le sujet « "+f.sub.name+" » et ses "+f.sub.items.length+" fiche(s) ?")){dropImgs(f.sub.items.flatMap(i=>i.imgs||[]));f.theme.subs=f.theme.subs.filter(x=>x!==f.sub);save();go("#/h/"+f.theme.id)}}
+  else if(a==="delSub"){const f=findSub(sid);if(confirm("Supprimer le sujet « "+f.sub.name+" » ? Ses "+f.sub.items.length+" fiche(s) iront dans la corbeille (30 jours).")){f.sub.items.forEach(i=>toTrash(i,f));unAlso(f.sub.id);f.theme.subs=f.theme.subs.filter(x=>x!==f.sub);save();go("#/h/"+f.theme.id)}}
   else if(a==="flt"){flt=b.dataset.f;subPage(location.hash.split("/")[2])}
   else if(a==="nav")fnav(+b.dataset.d);
   else if(a==="star"||a==="star2"){
@@ -959,7 +1018,13 @@ document.addEventListener("click",e=>{
     if(a==="star2")fiche(sid,iid);else route();
   }
   else if(a==="tag"){go("#/");setTimeout(()=>{const q=$("#q");q.value="#"+tid;q.dispatchEvent(new Event("input"))},0)}
-  else if(a==="delItem"){if(confirm("Supprimer cette fiche ?")){const f=findSub(sid);dropImgs((f.sub.items.find(x=>x.id===iid)||{}).imgs||[]);f.sub.items=f.sub.items.filter(x=>x.id!==iid);save();go("#/t/"+sid)}}
+  else if(a==="delItem"){const f=findSub(sid),it=f&&f.sub.items.find(x=>x.id===iid);if(it){toTrash(it,f);f.sub.items=f.sub.items.filter(x=>x!==it);save();go("#/t/"+sid);toast("Fiche mise à la corbeille (Compte › Corbeille).",4000)}}
+  else if(a==="link")linkSheet(sid,iid);
+  else if(a==="unlink"){const L=locate(iid),o=locate(tid);if(L)L.it.links=(L.it.links||[]).filter(x=>x!==tid);if(o)o.it.links=(o.it.links||[]).filter(x=>x!==iid);if(L)L.it.u=now();if(o)o.it.u=now();save();fiche(sid,iid)}
+  else if(a==="hist")histSheet(sid,iid);
+  else if(a==="trBack"){const x=(db.trash||[])[+tid];if(x){let f=findSub(x.sid);if(!f)f=findSub(commitPlace({theme:x.theme,sub:x.sub}));f.sub.items.unshift(x.it);db.trash.splice(+tid,1);save();trashPage();toast("Restaurée dans « "+f.sub.name+" ».")}}
+  else if(a==="trDel"){const x=(db.trash||[])[+tid];if(x&&confirm("Supprimer définitivement cette fiche ? Impossible d’annuler.")){dropImgs(x.it.imgs||[]);db.trash.splice(+tid,1);save();trashPage()}}
+  else if(a==="trEmpty"){if(confirm("Vider la corbeille ("+db.trash.length+" fiche(s)) ? Impossible d’annuler.")){dropImgs(db.trash.flatMap(x=>x.it.imgs||[]));db.trash=[];save();trashPage()}}
   else if(a==="delSrc"){
     const id=b.dataset.r,n=allSubs().reduce((c,x)=>c+x.sub.items.filter(i=>i.src===id).length,0);
     if(confirm(n?"Supprimer cette source ? Les "+n+" fiche(s) liées resteront, sans source.":"Supprimer cette source ?")){allSubs().forEach(x=>x.sub.items.forEach(i=>{if(i.src===id)i.src=""}));db.sources=db.sources.filter(s=>s.id!==id);save();go("#/s")}
@@ -976,7 +1041,7 @@ document.addEventListener("click",e=>{
     document.body.append(d);
   }
   else if(a==="docSub"){
-    const f=findSub(sid);exportDocx({name:f.sub.name,theme:f.theme.name,items:f.sub.items.filter(i=>flt==="all"||(flt==="star"?i.star:i.type===flt)).map(i=>pubItem(i))});
+    const f=findSub(sid);exportDocx({name:f.sub.name,theme:f.theme.name,items:subItems(f.sub).map(x=>x[0]).filter(i=>flt==="all"||(flt==="star"?i.star:i.type===flt)).map(i=>pubItem(i))});
   }
   else if(a==="docA"){
     const subs=sid==="all"?allSubs():[findSub(sid)].filter(Boolean);
@@ -1007,6 +1072,7 @@ document.addEventListener("click",e=>{
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&auth)syncNow()});
 addEventListener("online",()=>{if(auth)syncNow()});
 route();
+try{purgeTrash()}catch(e){}
 shareStart();
 if(auth)syncNow();
 setTimeout(gcImgs,8000);
