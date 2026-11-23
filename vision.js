@@ -175,7 +175,7 @@ const visSim=(a,b)=>{a=visNrm(a);b=visNrm(b);const m=Math.max(a.length,b.length)
 function visPick(c){
   c=c.filter(x=>x.t&&x.t.length>=2);if(!c.length)return"";
   let best=c[0],bs=-1;
-  for(const x of c){let s=0;for(const y of c)s+=(y===x?1:visSim(x.t,y.t)**4)*y.w;if(s>bs){bs=s;best=x}}
+  for(const x of c){let s=0;for(const y of c)s+=(y===x?1:visSim(x.t,y.t)**4+(x.t===y.t?0.35:0))*y.w;if(s>bs){bs=s;best=x}}
   return best.t;
 }
 // relit une ligne seule (recadrée, agrandie, mode « 1 ligne ») sous 3 formes : gris ×2, texte noir sur blanc ×2 et ×3
@@ -251,6 +251,27 @@ function visBands(L){
 }
 function visInk(c){const d=c.getContext("2d").getImageData(0,0,c.width,c.height).data;let n=0;for(let i=0;i<d.length;i+=4)if(d[i]<128)n++;return n/(d.length/4)}
 const visMonth=/\b(\d{1,2}|1er)\s*[-–. ]\s*(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[ée]cembre)\b(?:\s*((?:19|20)\d{2}))?/i;
+// fiabilité : nombre de lectures indépendantes qui confirment une ligne ; un chiffre doit figurer dans au moins 2 lectures
+const visSup=(t,c)=>{const n=visNrm(t);return c.filter(x=>{const m=visNrm(x.t);return visSim(x.t,t)>=0.85||(m.length>=n.length*0.6&&n.startsWith(m))}).length};
+const visTok=t=>t.toLowerCase().normalize("NFC").split(/\s+/).map(w=>w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,"")).filter(Boolean);
+// mots douteux d'une ligne : lus par une seule lecture, ou lus autrement par un nombre comparable de lectures (« où » / « ou »)
+const visUnc=(t,c)=>{
+  const cw=c.map(x=>visTok(x.t)),tw=visTok(t),out=tw.filter(w=>(w.length>=3||/\d/.test(w))&&cw.filter(a=>a.includes(w)).length<2),same=cw.filter(a=>a.length===tw.length);
+  tw.forEach((w,i)=>{const n={};same.forEach(a=>n[a[i]]=(n[a[i]]||0)+1);const alt=Object.entries(n).filter(([k,v])=>k!==w&&v>=0.5*Math.max(1,n[w]||0));if(alt.length)out.push(w+"/"+alt[0][0])});
+  return out;
+};
+// raisons de doute d'une lecture (liste vide = lecture sûre) : si non vide, aucune fiche n'est créée
+function visDoubt(a){if(a.doubt)return a.doubt;if(a.engine==="gemini")return a.title||a.summary||(a.figures||[]).length?[]:["Gemini n’a rien reconnu sur l’image."];return a.found?[]:["Aucun texte lisible sur l’image."]}
+// un chiffre est relu seul (3 variantes) : confirmé s'il est lu 2 fois pareil, corrigé si 2 relectures s'accordent sur une autre valeur
+async function visConfirm(wk,cv,gray,l){
+  const key=t=>{const m=String(t).match(/[+\-−]?\d+(?:[.,]\d+)?/);return m?m[0].replace("−","-").replace(".",","):""},k0=key(l.text);
+  if(!k0||l.x1===undefined)return{ok:true,t:l.text};
+  const rd=(await visReadLine(wk,cv,gray,l,{ml:0.01,mr:0.01})).map(x=>({t:x.t,k:key(x.t)})).filter(x=>x.k);
+  if(rd.filter(x=>x.k===k0).length>=2)return{ok:true,t:l.text};
+  const cnt={};rd.forEach(x=>cnt[x.k]=(cnt[x.k]||0)+1);const b=Object.entries(cnt).sort((x,y)=>y[1]-x[1])[0];
+  if(b&&b[1]>=2&&b[0]!==k0){const r=rd.find(x=>x.k===b[0]);return{ok:true,t:/\d/.test(r.t)&&/[%€$£]/.test(r.t)?r.t:l.text.replace(/[+\-−]?\d+(?:[.,]\d+)?/,b[0]),fixed:1}}
+  return{ok:false,t:l.text};
+}
 async function visCard(cv,vs,raws,lines,wk,dg){
   const H=cv.height,W=cv.width,passes=raws.filter(r=>r.n!=="blocs");
   // beaucoup de valeurs chiffrées isolées : c'est un graphique, pas un texte
@@ -292,7 +313,7 @@ async function visCard(cv,vs,raws,lines,wk,dg){
     const agree=c.filter(x=>visSim(x.t,t)>=0.6).length-1;
     if(c.length<2?c[0].w<1.1:agree<1){dg.push("Rangée y="+y0+" : lectures trop divergentes ("+c.map(x=>"«"+clip(x.t,24)+"»").join(" ")+")");return null}
     dg.push("Ligne retrouvée par lecture directe (y="+y0+") : « "+clip(t,60)+" » ← "+c.map(x=>"«"+clip(x.t,30)+"»").join(" | "));
-    return{text:t,x0:bx0,x1:bx1,y0,y1:y0+hB,h:hB,conf:80,filled:1};
+    return{text:t,x0:bx0,x1:bx1,y0,y1:y0+hB,h:hB,conf:80,filled:1,sup:c.filter(x=>visSim(x.t,t)>=0.85).length,dd:visUnc(t,c)};
   };
   for(let i=0;i<B.length-1;i++){
     const d=B[i+1].y0-B[i].y0,n=Math.round(d/pitch)-1;
@@ -307,6 +328,8 @@ async function visCard(cv,vs,raws,lines,wk,dg){
     }
   }
   const rows=B.concat(added).sort((a,b)=>a.y0-b.y0);
+  // en-tête d'une publication (nom + @identifiant) : pas du contenu
+  let author="";{const hi=rows.slice(0,3).findIndex(l=>/(^|\s)@\p{L}[\p{L}\p{N}_.]{2,}/u.test(l.text));if(hi>=0&&rows.length-hi-1>=3){author=rows.slice(0,hi+1).map(l=>l.text).join(" ");rows.splice(0,hi+1);dg.push("En-tête de publication écarté : "+author)}}
   // chaque ligne lue : vote entre les passes qui la recouvrent et trois relectures « 1 ligne »
   window.ocrExtra=" (relecture)";
   let partial=false;
@@ -319,11 +342,13 @@ async function visCard(cv,vs,raws,lines,wk,dg){
       const{top,bot}=bounds(l.y0,l.y1,rows.filter(o=>o!==l));
       try{(await visReadWide(wk,cv,vs[0],{...l,x0:bx0,x1:bx1},{ml:0.02,mr:0.012,top,bot})).forEach(x=>cands.push({t:x.t,w:x.w*0.6}))}catch(e){}
     }
-    const cc=cands.map(c=>({...c,t:visTrim(c.t)})).map(c=>({...c,w:c.w*visShape(c.t)})),t0=visPick(cc),t=t0?visUntail(visExtend(t0,cc),cc):"";if(t)l.text=t;
+    const cc=cands.map(c=>({...c,t:visTrim(c.t)})).map(c=>({...c,w:c.w*visShape(c.t)})),t0=visPick(cc),t=t0?visUntail(visExtend(t0,cc),cc):"";if(t)l.text=t;l.sup=visSup(l.text,cc);l.dd=visUnc(l.text,cc);
     dg.push("Ligne "+(i+1)+" « "+clip(l.text,60)+" » ← "+cands.map(c=>"«"+clip(c.t,40)+"» "+c.w.toFixed(1)).join(" | "));
   }
   window.ocrExtra="";
   rows.forEach(l=>{if(!visSane(l.text)){l.text="[…]";partial=true}});
+  const weak=rows.filter(l=>l.text!=="[…]"&&l.sup<(l.filled?2:3)),unc=rows.flatMap(l=>l.text==="[…]"?[]:l.dd);
+  dg.push("Lectures concordantes par ligne : "+rows.map(l=>l.sup).join(",")+(unc.length?" ; mots non confirmés : "+unc.join(", "):""));
   if(rows.length<3||rows.every(l=>l.text==="[…]")||rows.reduce((a,l)=>a+l.text.split(/\s+/).length,0)/rows.length<2.5){dg.push("Mode texte écarté : "+rows.length+" ligne(s) au final");return null}
   // un texte qui commence par une minuscule continue une phrase : il manque sans doute la ligne d'avant
   if(/^\p{Ll}/u.test(rows[0].text)){rows[0].text="[…] "+rows[0].text;partial=true}
@@ -345,7 +370,8 @@ async function visCard(cv,vs,raws,lines,wk,dg){
   const yr=(main+" "+source+" "+date).match(/\b(?:19|20)\d{2}\b/),p1=paras[0].join(" "),title=p1.length>80?p1.slice(0,p1.lastIndexOf(" ",80))+"…":p1;
   const text=[main,date?"Date indiquée : "+date:"",source?"Source indiquée : "+source:""].filter(Boolean).join("\n");
   dg.push("Texte : "+rows.length+" lignes, "+paras.length+" paragraphe(s)"+(partial?" — lecture incomplète […]":"")+(source?" ; source : "+source:"")+(date?" ; date : "+date:""));
-  return{card:1,partial,title:clip(title,120),summary:text,figures:[],sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([main]),sub:"",tags:[],type:/\d/.test(main)?"chi":"arg",kind:"Autre",note:date?"Date indiquée sur l’image : "+date:"",engine:"local",found:rows.length,diag:"Lecture locale (version 6a, mode texte)\n"+dg.join("\n")};
+  const doubt=[];if(partial)doubt.push("Un passage du texte est illisible.");if(weak.length)doubt.push(weak.length+(weak.length>1?" lignes lues":" ligne lue")+" avec trop peu de certitude.");if(unc.some(w=>/\d/.test(w)))doubt.push("Un chiffre n’a pas pu être confirmé.");if(unc.some(w=>!/\d/.test(w)))doubt.push("Des mots sont lus différemment d’une lecture à l’autre (lettre ou accent incertain) : "+unc.filter(w=>!/\d/.test(w)).slice(0,4).join(", ")+".");
+  return{card:1,partial,title:clip(title,120),summary:text,figures:[],sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([main]),sub:"",tags:[],type:/\d/.test(main)?"chi":"arg",kind:"Autre",note:[author?"Auteur du post : "+author:"",date?"Date indiquée sur l’image : "+date:""].filter(Boolean).join(" — "),engine:"local",found:rows.length,doubt,diag:"Lecture locale (version 7, mode texte)\n"+dg.join("\n")+(doubt.length?"\nDoute : "+doubt.join(" "):"")};
 }
 // relecture d'une ligne ; si le texte touche le bord droit du recadrage (mot coupé), on relit avec un recadrage plus large
 async function visReadWide(wk,cv,gray,l,o){
@@ -372,19 +398,21 @@ async function localAnalyse(cv){
   window.ocrExtra="";
   if(cd)return cd;
   const H=cv.height,txt=l=>l.text.replace(/[^\p{L}\p{N}]/gu,""),lettr=l=>(txt(l).match(/\p{L}/gu)||[]).length/Math.max(1,txt(l).length);
-  const top=lines.filter(l=>l.y0<H*0.38&&l.text.length>=8&&l.conf>=70&&lettr(l)>=0.75&&/\p{L}{3,}\s+\S+/u.test(l.text));
-  let title="",tl=null;
+  const top=lines.filter(l=>l.y0<H*0.38&&l.text.length>=8&&l.conf>=70&&lettr(l)>=0.6&&/\p{L}{3,}\s+\S+/u.test(l.text));
+  let title="",tl=null,tsup=99,tunc=0;
   if(top.length){
-    const m=Math.max(...top.map(l=>l.h)),big=top.filter(l=>l.h>=m*0.8).sort((a,b)=>a.y0-b.y0);
+    const m=Math.max(...top.map(l=>l.h)),big=top.filter(l=>l.h>=m*0.7).sort((a,b)=>a.y0-b.y0);
     let cur=big[0];const grp=[cur];tl=cur;
     for(const l of big.slice(1)){if(l.y0-cur.y1<Math.max(cur.h,1)*1.4){grp.push(l);cur=l;tl=l}else break}
+    // suite du titre mal lue (peu fiable mais bien placée) : même taille, alignée, juste dessous ; la lecture est ensuite votée ligne par ligne
+    for(let k=0;k<3;k++){const nx=lines.find(l=>!grp.includes(l)&&l.x1!==undefined&&l.conf>=40&&l.text.length>=8&&lettr(l)>=0.5&&/\p{L}{3,}/u.test(l.text)&&l.y0>=cur.y1-2&&l.y0-cur.y1<Math.max(cur.h,1)*1.4&&l.h>=m*0.65&&l.h<=m*1.3&&Math.abs(l.x0-grp[0].x0)<cv.width*0.04);if(!nx)break;grp.push(nx);cur=nx;tl=nx}
     window.ocrExtra=" (titre)";
     for(const l of grp){
       try{
         const ov=(a,b)=>{const w=Math.min(a.x1,b.x1)-Math.max(a.x0,b.x0),h=Math.min(a.y1,b.y1)-Math.max(a.y0,b.y0);return w>0&&h>0?w*h/Math.min((a.x1-a.x0)*(a.y1-a.y0),(b.x1-b.x0)*(b.y1-b.y0)):0};
         const cands=[];raws.forEach(r=>r.L.forEach(x=>{if(x.x1!==undefined&&ov(x,l)>0.5&&x.text.length>=l.text.length*0.6&&x.text.length<=l.text.length*1.6)cands.push({t:x.text,w:r.w*x.conf/100,n:r.n})}));
         (await visReadLine(wk,cv,vs[0],l)).forEach((x,i)=>cands.push({...x,n:"relecture "+(i+1)}));
-        const t=visPick(cands);
+        const t=visPick(cands);tsup=Math.min(tsup,t?cands.filter(c=>visSim(c.t,t)>=0.85).length:0);if(t)tunc+=visUnc(t,cands).length;
         dg.push("Titre « "+clip(t||l.text,70)+" » ← "+cands.map(c=>"«"+clip(c.t,40)+"» "+c.n+" "+c.w.toFixed(1)).join(" | "));
         if(t)l.text=t;
       }catch(e){dg.push("Titre : erreur "+clip(e.message,40))}
@@ -395,19 +423,24 @@ async function localAnalyse(cv){
     var subt=lines.filter(l=>l!==cur&&l.y0>=tl.y1-2&&l.y0-tl.y1<tl.h*2.2&&l.h<=m*0.8&&l.h>=m*0.3&&l.conf>=70&&l.text.length>=18&&lettr(l)>=0.75).sort((a,b)=>a.y0-b.y0)[0];
   }
   const subt2=subt&&lines.find(l=>l!==subt&&l.y0>=subt.y1-2&&l.y0-subt.y1<subt.h*1.2&&Math.abs(l.h-subt.h)<=subt.h*0.3&&Math.abs(l.x0-subt.x0)<cv.width*0.03&&l.conf>=70&&l.text.length>=18&&lettr(l)>=0.75);
-  if(!title&&lines.length)title=lines.slice().sort((a,b)=>b.h-a.h)[0].text;
+  if(!title&&lines.length){title=lines.slice().sort((a,b)=>b.h-a.h)[0].text;tsup=0}
   const sRe=/^\s*(sources?|d['’]apr[eè]s|donn[eé]es|cr[eé]dit)\b\s*[:\-–.]?\s*(.*)$/i,sl=lines.find(l=>sRe.test(l.text)),source=sl?(sl.text.replace(sRe,"$2").trim()||sl.text):"";
   const lab=lines.filter(l=>l!==sl&&!title.includes(l.text)&&/\d/.test(l.text)&&/\p{L}{2,}/u.test(l.text)&&l.text.length>=5&&l.text.length<=70)
     .sort((a,b)=>b.conf-a.conf).slice(0,6).sort((a,b)=>a.y0-b.y0).map(l=>clip(l.text,70));
   // valeurs avec unité (8,4 %) : associées aux années (2019…) les plus proches à l'horizontale, sinon à l'étiquette voisine (au-dessus ou à gauche)
   const valRe=/^[\s(]*[+\-−]?\d{1,3}(?:[\s.]\d{3})*(?:[.,]\d+)?\s*(?:%|€|\$|£|k€|m€|md€|milliards?|millions?|points?)\s*\)?$/i,yrRe=/^\s*(?:19|20)\d{2}\s*$/,cx=l=>(l.x0+l.x1)/2;
   lines.forEach(l=>{const c=l.text.replace(/^[\s=|_~.,:;*•·'"]+/,"").replace(/^[\-−]\s*[=|_~.,:;*•·]+\s*(?=\d)/,"");if(c!==l.text&&valRe.test(c))l.text=c});
+  // une valeur dont l'unité est mal lue (« 22,3 D ») : relue seule, adoptée si 2 relectures s'accordent
+  {let nb=0;for(const l of lines){if(nb>=12)break;if(l.x1===undefined||valRe.test(l.text)||!/^[\s(]*[+\-−]?\d{1,3}(?:[.,]\d+)?\s*[%DOo°”"©]?\s*\)?$/.test(l.text))continue;nb++;
+    try{const rd=(await visReadLine(wk,cv,vs[0],l,{ml:0.01,mr:0.01})).map(x=>visTrim(x.t)).filter(t=>valRe.test(t)),k=t=>t.replace(/\s+/g,"").replace("−","-"),g={};rd.forEach(t=>{g[k(t)]=(g[k(t)]||0)+1});const b=Object.entries(g).sort((x,y)=>y[1]-x[1])[0];
+      if(b&&b[1]>=2){const t=rd.find(x=>k(x)===b[0]);dg.push("Unité relue « "+l.text+" » → « "+t+" »");l.text=t}}catch(e){}}}
   const vals=lines.filter(l=>valRe.test(l.text)),yrs=lines.filter(l=>yrRe.test(l.text)),paired=[];
+  if(vals.length&&vals.length<=14){window.ocrExtra=" (chiffres)";for(const v of vals){try{const r=await visConfirm(wk,cv,vs[0],v);if(r.fixed){dg.push("Chiffre corrigé « "+v.text+" » → « "+r.t+" »");v.text=r.t}else if(!r.ok){v.bad=true;dg.push("Chiffre non confirmé : « "+v.text+" »")}}catch(e){}}window.ocrExtra=""}
   if(yrs.length>=2){
     const used=new Set();
     for(const v of vals.slice().sort((a,b)=>cx(a)-cx(b))){
       let best=null,bd=1e9;for(const y of yrs){if(used.has(y))continue;const dd=Math.abs(cx(y)-cx(v));if(dd<bd){bd=dd;best=y}}
-      if(best&&bd<cv.width*0.12){used.add(best);paired.push({x:cx(v),t:best.text.trim()+" : "+pct(v.text)})}
+      if(best&&bd<cv.width*0.12){used.add(best);paired.push({x:cx(v),v,t:best.text.trim()+" : "+pct(v.text)})}
     }
   }
   let lp=[];
@@ -431,13 +464,23 @@ async function localAnalyse(cv){
     if(gd.length>=2){
       dg.push("Pas de graphique reconnu : "+gd.length+" lignes sûres reprises telles quelles");
       const yr0=(gd.join(" ")+" "+source).match(/\b(?:19|20)\d{2}\b/);
-      return{card:1,plain:1,partial:true,title:clip(gd[0],120),summary:gd.join("\n"),figures:[],sourceLine:clip(source,120),year:yr0?yr0[0]:"",theme:themeFromSubjects([gd.join(" ")]),sub:"",tags:[],type:/\d/.test(gd.join(" "))?"chi":"arg",kind:"Autre",note:"",engine:"local",found:gd.length,diag:"Lecture locale (version 6a)\n"+dg.join("\n")};
+      return{card:1,plain:1,partial:true,title:clip(gd[0],120),summary:gd.join("\n"),figures:[],sourceLine:clip(source,120),year:yr0?yr0[0]:"",theme:themeFromSubjects([gd.join(" ")]),sub:"",tags:[],type:/\d/.test(gd.join(" "))?"chi":"arg",kind:"Autre",note:"",engine:"local",found:gd.length,doubt:["La mise en page n’a pas été reconnue : seul un texte partiel a pu être lu."],diag:"Lecture locale (version 7)\n"+dg.join("\n")};
     }
   }
   const fig=(paired.length>=2?paired.sort((a,b)=>a.x-b.x).map(p=>p.t):lp.length?lp.map(p=>p.t):[...vals.slice(0,6).map(v=>pct(v.text)),...lab]).slice(0,8);
+  const dbt=[];
+  if(!title||!visSane(title))dbt.push("Le titre est illisible.");else if(tsup<3||tunc)dbt.push("Le titre est peu sûr : les lectures divergent.");
+  if(!fig.length)dbt.push("Aucune valeur n’a été lue.");
+  else{
+    const used=paired.length>=2?paired.map(p=>p.v):lp.length?lp.map(p=>p.v):vals.slice(0,6);
+    if(paired.length>=2){if(yrs.length>paired.length)dbt.push((yrs.length-paired.length)+" année(s) sans valeur lue.");if(vals.length>paired.length)dbt.push((vals.length-paired.length)+" valeur(s) sans année.")}
+    else if(lp.length){const mh=Math.max(...vals.map(v=>v.h));if(vals.filter(v=>v.h>=mh*0.75).length>lp.length)dbt.push("Des valeurs n’ont pas de libellé.")}
+    else dbt.push("Les valeurs ne sont pas reliées à leurs libellés.");
+    if(used.some(v=>v.bad))dbt.push("Un chiffre n’a pas pu être confirmé.");
+  }
   const all=lines.map(l=>l.text).join(" "),yr=(source+" "+title+" "+(subt?subt.text:"")+" "+(subt2?subt2.text:"")).match(/\b(?:19|20)\d{2}\b/);
   const words=[...new Set((title.toLowerCase().match(/\p{L}{5,}/gu)||[]))].slice(0,3);
-  return{title:clip(title,120),subtitle:subt?clip(subt.text+(subt2?" "+subt2.text:""),200):"",summary:"",figures:fig,sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([all]),sub:(()=>{const p=title.split(/\s*:\s/)[0].trim();return p.length>=6&&p.length<=50&&p!==title?p:title.length>=6&&title.length<=45?title:""})(),tags:words,type:"chi",engine:"local",found:lines.filter(l=>visLet(l)>=4&&visSane(l.text)).length,diag:"Lecture locale (version 6a)\n"+dg.join("\n")+"\nValeurs : "+fig.length+(fig.length?" — "+fig.join(" ; "):"")};
+  return{title:clip(title,120),subtitle:subt?clip(subt.text+(subt2?" "+subt2.text:""),200):"",summary:"",figures:fig,sourceLine:clip(source,120),year:yr?yr[0]:"",theme:themeFromSubjects([all]),sub:(()=>{const p=title.split(/\s*:\s/)[0].trim();return p.length>=6&&p.length<=50&&p!==title?p:title.length>=6&&title.length<=45?title:""})(),tags:words,type:"chi",engine:"local",doubt:dbt,found:lines.filter(l=>visLet(l)>=4&&visSane(l.text)).length,diag:"Lecture locale (version 7)\n"+dg.join("\n")+(dbt.length?"\nDoute : "+dbt.join(" "):"")+"\nValeurs : "+fig.length+(fig.length?" — "+fig.join(" ; "):"")};
 }
 
 /* --- brouillon de fiche --- */
@@ -479,6 +522,46 @@ async function visAnalyse(file,st,ctx){
     return{id:ctx.id,a};
   }catch(e){return{id:ctx.id,err:e}}
 }
+// lecture douteuse : aucune fiche n'est créée ; on propose de reprendre l'image, de la relire avec Gemini, ou de la garder seule
+function visRefuse(it,tid,cb){
+  const d=document.createElement("div");d.className="ov";d.id="rf";const url=URL.createObjectURL(it.file),gem=gKey()&&it.engine!=="gemini";
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Lecture pas assez sûre"><div class="h"></div><h2 class="ct" style="margin:0">Lecture pas assez sûre</h2>
+<img src="${url}" alt="" style="max-height:150px;width:100%;object-fit:contain;border-radius:12px;background:#fff">
+<p class="mu" style="margin:0"><b>Aucune fiche n’a été créée</b> : mieux vaut pas de texte qu’un texte faux.</p>
+<ul class="mu" style="margin:0;padding-left:18px">${it.doubt.slice(0,3).map(r=>`<li>${esc(r)}</li>`).join("")}</ul>
+<p class="mu" style="margin:0">Reprends l’image plus nette : texte bien cadré, sans flou ni reflet.${gKey()?"":" Une clé Gemini gratuite (onglet Compte) lit mieux les images difficiles."}</p>
+<button class="btn pri" data-o="again">Choisir une autre image</button>${gem?`<button class="btn" data-o="gem">Relire avec Gemini</button>`:""}
+<button class="btn gh" data-o="keep">Garder l’image seule (à décrire)</button><button class="btn gh" data-o="drop">Abandonner</button>
+${it.diag?`<details class="card"><summary>Détails de la lecture</summary><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px;margin:8px 0 0">${esc(it.diag)}</pre></details>`:""}</div>`;
+  const close=()=>{d.remove();URL.revokeObjectURL(url)};
+  d.onclick=async e=>{
+    const b=e.target.closest("[data-o]");
+    if(!b){if(e.target===d){close();dropImgs([it.id]);cb("drop")}return}
+    const o=b.dataset.o;
+    if(o==="gem"){
+      b.disabled=true;b.textContent="Gemini lit l’image…";
+      try{
+        const u=await imgUrl(it.id),blob=await(await fetch(u)).blob();let a;
+        try{a=await geminiAnalyse(blob)}catch(x){if(x&&x.status===404&&await healModel())a=await geminiAnalyse(blob);else throw x}
+        const dbt=visDoubt(a);
+        if(dbt.length){close();it.engine="gemini";it.doubt=["Gemini : "+dbt[0]];it.diag=a.diag||it.diag;visRefuse(it,tid,cb);return}
+        close();cb("ok",{a,id:it.id,file:it.file});
+      }catch(x){b.disabled=false;b.textContent="Relire avec Gemini";toast("Gemini indisponible : "+clip(x&&x.message||"",50),4000)}
+      return;
+    }
+    close();
+    if(o==="again"){dropImgs([it.id]);cb("again");imageFlow(tid);return}
+    if(o==="keep"){cb("keep",{id:it.id,file:it.file});return}
+    dropImgs([it.id]);cb("drop");
+  };
+  document.body.append(d);
+}
+const visKeep=id=>{const dr=toDraft({},id);dr.tags=[...new Set([...dr.tags,"à décrire"])];return dr};
+// suite d'une image seule après un refus
+const visSingle=tid=>(k,p)=>{
+  if(k==="ok"){draft=toDraft(p.a,p.id);flushImages();go("#/e/"+tid+"/new");toast("Fiche prête (Gemini). Vérifie, puis enregistre.",6000)}
+  else if(k==="keep"){draft=visKeep(p.id);flushImages();go("#/e/"+tid+"/new");toast("Image jointe : décris-la en une phrase.",6000)}
+};
 async function runImage(file,tid){
   const d=document.createElement("div");d.className="ov";d.id="an";const ctx={dead:false,id:""};
   const url=URL.createObjectURL(file);
@@ -491,19 +574,15 @@ async function runImage(file,tid){
   const st=m=>{const e=d.querySelector("#anS");if(e)e.textContent=m};
   const r=await visAnalyse(file,st,ctx);
   if(ctx.dead){if(r.id)dropImgs([r.id]);return}
-  let msg="";
-  if(r.err||!r.a){
-    if(!r.id){close();toast("Image illisible : "+clip(r.err?r.err.message:"",60));return}
-    msg="Analyse impossible ("+clip(r.err?r.err.message:"",60)+"). L’image est jointe : décris-la toi-même.";
-    draft=toDraft({},r.id);
-  }else{
-    msg=r.a.engine==="gemini"?"Fiche prête (Gemini). Vérifie, puis enregistre.":r.a.plain?"Lecture partielle du texte : vérifie et corrige avant d’enregistrer.":r.a.partial?"Lecture incomplète : complète les passages « […] », puis enregistre.":(r.a.found?"Fiche prête (texte lu sur l’image). Vérifie, puis enregistre.":"Aucun texte lisible : décris l’image en une phrase.");
-    draft=toDraft(r.a,r.id);
-  }
-  close();flushImages();go("#/e/"+tid+"/new");toast(msg,6000);
+  if(!r.id){close();toast("Image illisible : "+clip(r.err?r.err.message:"",60));return}
+  const dbt=r.err||!r.a?["Analyse impossible"+(r.err?" ("+clip(r.err.message,50)+")":"")+"."]:visDoubt(r.a);
+  close();
+  if(dbt.length){visRefuse({id:r.id,file,doubt:dbt,diag:r.a&&r.a.diag||"",engine:r.a&&r.a.engine},tid,visSingle(tid));return}
+  draft=toDraft(r.a,r.id);flushImages();go("#/e/"+tid+"/new");
+  toast(r.a.engine==="gemini"?"Fiche prête (Gemini). Vérifie, puis enregistre.":"Fiche prête (texte lu sur l’image). Vérifie, puis enregistre.",6000);
 }
 
-/* --- plusieurs images d'un coup : une fiche créée par image, puis récapitulatif --- */
+/* --- plusieurs images d'un coup : une fiche par image sûre ; les lectures douteuses vont dans « à refaire » (aucune fiche) --- */
 function visCreate(dr,hasTitle,tid){
   let src="";
   if(hasTitle){const n=dr.newSrc;src=newSource({title:n.title,kind:n.kind,url:n.url,author:n.author,year:n.year,note:n.note,cat:n.cat})}
@@ -521,7 +600,7 @@ async function runBatch(files,tid){
   let url="";const close=()=>{d.remove();if(url)URL.revokeObjectURL(url);ocrSay=null};
   d.onclick=e=>{if(e.target===d||e.target.closest("[data-x]")){ctx.dead=true;close();if(ctx.id)dropImgs([ctx.id])}};
   document.body.append(d);
-  const q=s=>d.querySelector(s),made=[];let bad=0;
+  const q=s=>d.querySelector(s),made=[],redo=[];let bad=0;
   for(let k=0;k<N&&!ctx.dead;k++){
     ctx.id="";if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(files[k]);
     if(q("#anI"))q("#anI").src=url;
@@ -531,31 +610,43 @@ async function runBatch(files,tid){
     if(ctx.dead){if(r.id)dropImgs([r.id]);break}
     if(!r.id){bad++;continue}
     try{
-      const ok=!r.err&&r.a&&(r.a.engine==="gemini"||r.a.found),dr=toDraft(ok?r.a:{},r.id);
-      if(!ok)dr.tags=[...new Set([...dr.tags,"à décrire"])];
-      made.push(visCreate(dr,ok&&!!r.a.title,tid));
+      const dbt=r.err||!r.a?["Analyse impossible"+(r.err?" ("+clip(r.err.message,50)+")":"")+"."]:visDoubt(r.a);
+      if(dbt.length)redo.push({id:r.id,file:files[k],doubt:dbt,diag:r.a&&r.a.diag||"",engine:r.a&&r.a.engine});
+      else made.push(visCreate(toDraft(r.a,r.id),!!r.a.title,tid));
     }catch(e){bad++;dropImgs([r.id])}
   }
   close();flushImages();
-  if(!made.length){toast(ctx.dead?"Import arrêté.":"Aucune image lisible.");return}
-  route();visSummary(made,bad,ctx.dead?N-made.length-bad:0);
+  if(!made.length&&!redo.length){toast(ctx.dead?"Import arrêté.":"Aucune image lisible.");return}
+  route();visSummary(made,bad,ctx.dead?N-made.length-redo.length-bad:0,redo,tid);
 }
-function visSummary(made,bad,left){
-  closeSheet();const n=made.length,todo=made.filter(m=>m.todo).length;
+function visSummary(made,bad,left,redo,tid){
+  redo=redo||[];closeSheet();const n=made.length,s=x=>x>1?"s":"";
+  const drop=()=>{redo.splice(0).forEach(r=>dropImgs([r.id]))};
   const d=document.createElement("div");d.className="ov";d.id="sh";
-  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Fiches créées"><div class="h"></div><h2 class="ct" style="margin:0">${n} fiche${n>1?"s":""} créée${n>1?"s":""}</h2>
-<p class="mu" style="margin:0">Touche une fiche pour la vérifier ou la corriger.${todo?` ${todo} sans texte lisible : à décrire (étiquette « à décrire »).`:""}${bad?` ${bad} image${bad>1?"s":""} illisible${bad>1?"s":""}.`:""}${left>0?` ${left} non traitée${left>1?"s":""} (arrêt).`:""}</p>
-<div class="stack" style="overflow:auto">${made.map(m=>`<button class="opt" data-g="#/f/${m.sid}/${m.iid}"><span><b>${esc(clip(m.title,70))}</b><small>${esc(m.label)}${m.todo?" · à décrire":""}</small></span></button>`).join("")}</div>
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Fiches créées"><div class="h"></div><h2 class="ct" style="margin:0">${n?n+" fiche"+s(n)+" créée"+s(n):"Aucune fiche créée"}</h2>
+<p class="mu" style="margin:0">${n?"Touche une fiche pour la vérifier ou la corriger.":""}${bad?` ${bad} image${s(bad)} illisible${s(bad)}.`:""}${left>0?` ${left} non traitée${s(left)} (arrêt).`:""}</p>
+${n?`<div class="stack" style="overflow:auto">${made.map(m=>`<button class="opt" data-g="#/f/${m.sid}/${m.iid}"><span><b>${esc(clip(m.title,70))}</b><small>${esc(m.label)}${m.todo?" · à décrire":""}</small></span></button>`).join("")}</div>`:""}
+${redo.length?`<p class="mu" style="margin:0"><b>${redo.length} image${s(redo.length)} à refaire</b> : lecture pas assez sûre, aucune fiche créée. Touches-en une pour choisir quoi faire.</p>
+<div class="stack" style="overflow:auto">${redo.map((r,i)=>`<button class="opt" data-r="${i}"><span><b>${esc(clip(r.file.name||"Image",40))}</b><small>${esc(clip(r.doubt[0],80))}</small></span></button>`).join("")}</div>`:""}
 <button class="btn" data-o="done">Terminer</button></div>`;
   d.onclick=e=>{
-    if(e.target===d){closeSheet();return}
-    const g=e.target.closest("[data-g]");if(g){closeSheet();go(g.dataset.g);return}
-    if(e.target.closest("[data-o]"))closeSheet();
+    if(e.target===d){drop();closeSheet();return}
+    const g=e.target.closest("[data-g]");if(g){drop();closeSheet();go(g.dataset.g);return}
+    const r=e.target.closest("[data-r]");
+    if(r){const it=redo[+r.dataset.r];closeSheet();
+      visRefuse(it,tid,(k,p)=>{
+        const i=redo.indexOf(it);if(i>=0)redo.splice(i,1);
+        try{
+          if(k==="ok")made.push(visCreate(toDraft(p.a,p.id),!!p.a.title,tid));
+          else if(k==="keep")made.push(visCreate(visKeep(p.id),false,tid));
+        }catch(x){dropImgs([it.id])}
+        if(redo.length||made.length)visSummary(made,bad,left,redo,tid);
+      });return}
+    if(e.target.closest("[data-o]")){drop();closeSheet()}
   };
   document.body.append(d);
 }
 
-/* --- « Relire le texte de l'image » sur une fiche existante : refait l'analyse de la 1re image et remplit le formulaire --- */
 async function rereadImage(){
   const id=typeof fImgs!=="undefined"&&fImgs[0];if(!id){toast("Ajoute d’abord une image à la fiche.");return}
   const btn=document.querySelector("[data-a=reread]"),old=btn?btn.textContent:"",say=m=>{if(btn)btn.textContent=m};
@@ -566,8 +657,9 @@ async function rereadImage(){
     const blob=await(await fetch(u)).blob();let a=null,pre="";
     if(gKey()){try{a=await geminiAnalyse(blob)}catch(e){pre="Gemini indisponible, lecture locale. "}}
     if(!a){ocrSay=m=>say(m);a=await localAnalyse(await ocrCanvas(blob))}
-    const dr=toDraft(a,id),$=q=>document.querySelector(q);
+    const dr=toDraft(a,id),$=q=>document.querySelector(q),dbt=visDoubt(a);
     if(!$("#fX"))return;
+    if(dbt.length){const dg=$("#diag");if(dg){$("#diagT").textContent=(a.diag||"")+"\nDoute : "+dbt.join(" ");dg.hidden=false}toast("Lecture pas assez sûre, texte inchangé : "+dbt[0],7000);return}
     $("#fX").value=dr.text;if(a.type)$("#fT").value=dr.type;
     const tg=$("#fG");tg.value=[...new Set([...tg.value.split(",").map(x=>x.trim().replace(/^#/,"")).filter(Boolean),...dr.tags])].join(", ");
     window.rereadNS=dr.newSrc;$("#fR").value="__new";$("#fN").hidden=false;$("#fNT").value=dr.newSrc.title;$("#fNK").value="Graphique";

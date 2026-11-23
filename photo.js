@@ -304,12 +304,19 @@ function buildPassages(cols){
         if(!seg.some(r=>r.w.m)){pass=null;continue}
         const gs=new Set(seg.filter(r=>r.w.m).map(r=>r.w.g));
         if(pass&&pass.p!==p&&![...gs].some(g=>pass.g.has(g)))pass=null; // autre paragraphe, autre marque : nouveau passage
-        if(!pass){pass={parts:[],lines:new Set(),p:null};out.push(pass)}
-        pass.parts.push((pass.p===p?" ":pass.parts.length?"\n":"")+t);pass.p=p;pass.g=gs;seg.forEach(r=>pass.lines.add(r.l));
+        if(!pass){pass={parts:[],lines:new Set(),p:null,ws:[]};out.push(pass)}
+        pass.parts.push((pass.p===p?" ":pass.parts.length?"\n":"")+t);pass.p=p;pass.g=gs;seg.forEach(r=>{pass.lines.add(r.l);pass.ws.push(r.w)});
       }
     }
   }
-  return out.map(p=>({text:p.parts.join(""),lines:p.lines}));
+  return out.map(p=>({text:p.parts.join(""),lines:p.lines,ws:p.ws}));
+}
+// passage douteux : trop de mots mal lus (confiance < 60) ou texte incohérent → décoché, à corriger ou à refaire
+function pasDoubt(p){
+  const w=(p.ws||[]).filter(x=>(x.t.match(/\p{L}/gu)||[]).length>=3),r=[];
+  if(w.length&&w.filter(x=>x.c<60).length/w.length>0.15)r.push("beaucoup de mots mal lus");
+  if(typeof visSane==="function"&&!visSane(p.text))r.push("texte incohérent");
+  return r;
 }
 // numéro de page : nombre isolé en haut près d'un bord (pas un numéro de chapitre centré), sinon en bas
 function pageNum(cols){
@@ -451,7 +458,8 @@ function openReview(R,tid){
   const hint=()=>{d.querySelector("#rvDH").textContent=d.querySelector("#rvD").value==="__auto"?"Sera classé dans : "+planNow().label:""};
   const count=()=>{hint();const nb=d.querySelectorAll("#rvP input:checked").length,b=d.querySelector("#rvOk");b.textContent=nb?"Créer "+nb+" fiche"+(nb>1?"s":""):"Créer";b.disabled=!nb;d.querySelector("#rvH").textContent=(photoN>1?"Photo "+photoK+" sur "+photoN+" · ":"")+ps.length+" passage"+(ps.length>1?"s":"")+" repéré"+(ps.length>1?"s":"")};
   const list=()=>{
-    d.querySelector("#rvP").innerHTML=ps.length?ps.map((p,i)=>`<div class="card pas"><label class="chk"><input type="checkbox" data-i="${i}" checked><b>Passage ${i+1}</b></label><textarea data-i="${i}" rows="4">${esc(p.text)}</textarea></div>`).join(""):'<p class="mu">Aucune marque repérée : touche les lignes à garder sur la photo.</p>';
+    const dbt=ps.map(pasDoubt),all=ps.length&&dbt.every(x=>x.length);
+    d.querySelector("#rvP").innerHTML=(all?'<p class="mu" style="color:#b3261e"><b>Lecture pas assez sûre</b> : aucun passage n’est coché. Reprends la photo plus nette (page à plat, bien éclairée), ou corrige les textes à la main puis coche-les.</p>':"")+(ps.length?ps.map((p,i)=>`<div class="card pas"><label class="chk"><input type="checkbox" data-i="${i}"${dbt[i].length?"":" checked"}><b>Passage ${i+1}</b></label>${dbt[i].length?`<p class="mu" style="margin:4px 0;color:#b3261e">Lecture douteuse (${dbt[i].join(", ")}) : corrige le texte, puis coche pour créer la fiche.</p>`:""}<textarea data-i="${i}" rows="4">${esc(p.text)}</textarea></div>`).join(""):'<p class="mu">Aucune marque repérée : touche les lignes à garder sur la photo.</p>');
     count();
   };
   draw();list();
