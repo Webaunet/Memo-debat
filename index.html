@@ -535,7 +535,7 @@ async function token(){
   if(!auth)throw new Error("non connecté");
   if(auth.expires_at-60<Date.now()/1000){
     try{const s=await sb("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:{refresh_token:auth.refresh_token}});setAuth({...s,user:s.user||auth.user})}
-    catch(e){if(e.status>=400&&e.status<500){setAuth(null);syncState="off";throw new Error("session expirée, reconnecte-toi")}throw e}
+    catch(e){if(e.status===400&&/refresh|invalid|not.?found|revoked/i.test(e.message)){setAuth(null);syncState="off";throw new Error("session expirée, reconnecte-toi")}if(e.status){const x=new Error("serveur indisponible ("+e.status+"), nouvel essai plus tard");x.net=1;throw x}throw e}
   }
   return auth.access_token;
 }
@@ -984,7 +984,7 @@ ${typeof gemCard==="function"?gemCard():""}
 <a class="card row" href="#/x"><span class="sp"><b>Corbeille</b><br><span class="mu">Fiches supprimées, gardées 30 jours</span></span><span class="cnt">${(db.trash||[]).length}</span>${ic("chev",18)}</a>
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 12a (24/11)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 12b (24/11)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   $("#revM").onchange=e=>{lsSet("memo_rev",e.target.value);toast("Délai enregistré : "+e.target.value+" mois.")};
   const lf=$("#lf");
