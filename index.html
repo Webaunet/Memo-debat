@@ -408,9 +408,43 @@ async function sharePage(id){
 let shareDraft=null;
 function shareStart(){
   const q=new URLSearchParams(location.search);
+  if(q.has("shared")){history.replaceState(null,"",location.pathname+location.hash);shareFiles();return}
   if(!(q.has("title")||q.has("text")||q.has("url")))return;
-  const t=(q.get("title")||"").trim(),x=(q.get("text")||"").trim(),u=(q.get("url")||"").trim();
   history.replaceState(null,"",location.pathname+location.hash);
+  shareText(q.get("title"),q.get("text"),q.get("url"));
+}
+// partage reçu par le service worker (POST) : images et/ou texte mis de côté dans le cache « memo-share »
+async function shareFiles(){
+  let meta=null;const files=[];
+  try{
+    const c=await caches.open("memo-share"),m=await c.match("./__share/meta");
+    if(m){meta=await m.json();for(let i=0;i<meta.n;i++){const r=await c.match("./__share/"+i);if(r){const b=await r.blob();files.push(new File([b],meta.names[i]||"image-"+(i+1)+".jpg",{type:b.type||"image/jpeg"}))}}}
+    await caches.delete("memo-share");
+  }catch(e){}
+  if(!meta){toast("Partage introuvable : partage à nouveau vers Mémo Débat.",5000);return}
+  if(files.length)openShareImgs(files);else shareText(meta.title,meta.text,meta.url);
+}
+function openShareImgs(files){
+  const subs=allSubs(),n=files.length,s=n>1?"s":"";closeSheet();
+  const d=document.createElement("div");d.className="ov";d.id="sh";
+  d.innerHTML=`<div class="sheet" role="dialog" aria-label="Ajouter les images partagées"><div class="h"></div>
+<h2 class="ct" style="margin:0 0 4px">${n} image${s} partagée${s}</h2>
+<label class="lbl" for="shT">Classer dans</label><select id="shT"><option value="auto" selected>Automatique (déduit du contenu)</option>${subs.map(x=>`<option value="${x.sub.id}">${esc(x.theme.name)} › ${esc(x.sub.name)}</option>`).join("")}</select>
+<button class="opt pri" data-o="img"><span class="ico">${ic("img",24)}</span><span><b>Graphique ou capture</b><small>Je lis le texte et prépare ${n>1?"une fiche par image":"la fiche"}</small></span></button>
+<button class="opt" data-o="photo"><span class="ico">${ic("cam",24)}</span><span><b>Photo annotée</b><small>Page${s} de livre marquée${s} au crayon</small></span></button>
+<button class="btn" data-o="no">Annuler</button></div>`;
+  d.onclick=e=>{
+    if(e.target===d){closeSheet();return}
+    const b=e.target.closest("[data-o]");if(!b)return;
+    const t=$("#shT").value,o=b.dataset.o;closeSheet();if(t!=="auto")lsSet("memoLastSub",t);
+    if(o==="img"){if(n===1)runImage(files[0],t);else runBatch(files,t)}
+    else if(o==="photo")photoStart(files,t);
+  };
+  document.body.append(d);
+}
+function shareText(t,x,u){
+  t=(t||"").trim();x=(x||"").trim();u=(u||"").trim();
+  if(!(t||x||u))return;
   const m=(u||x).match(/https?:\/\/[^\s]+/),url=u||(m?m[0]:"");
   let txt=url?x.replace(url,"").trim():x;if(txt===t)txt="";
   let host="";try{host=new URL(url).hostname.replace(/^www\./,"")}catch(e){}
@@ -826,7 +860,7 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 ${typeof gemCard==="function"?gemCard():""}
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 8 (23/11, 23 h)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 9 (23/11, 23 h 30)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   const lf=$("#lf");
   if(lf){

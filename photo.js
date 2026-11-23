@@ -4,8 +4,9 @@ let ocrWorker=null,ocrSay=null,scanBusy=false;
 let photoQ=[],photoN=0,photoK=0,photoTid="auto",photoTot=0;
 function pickPhoto(tid){
   const i=document.createElement("input");i.type="file";i.accept="image/*";i.multiple=true;i.style.display="none";document.body.append(i);
-  i.onchange=()=>{const fs=[...i.files];i.remove();if(!fs.length)return;photoQ=fs.slice(1);photoN=fs.length;photoK=1;photoTid=tid;photoTot=0;scanPhoto(fs[0],tid)};i.click();
+  i.onchange=()=>{const fs=[...i.files];i.remove();photoStart(fs,tid)};i.click();
 }
+function photoStart(fs,tid){if(!fs.length)return;photoQ=fs.slice(1);photoN=fs.length;photoK=1;photoTid=tid;photoTot=0;scanPhoto(fs[0],tid)}
 function nextPhoto(){if(!photoQ.length)return false;photoK++;scanPhoto(photoQ.shift(),photoTid);return true}
 async function getOcr(){
   if(!window.Tesseract){

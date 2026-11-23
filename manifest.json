@@ -21,12 +21,21 @@
     }
   ],
   "share_target": {
-    "action": "./index.html",
-    "method": "GET",
+    "action": "./index.html?share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
     "params": {
       "title": "title",
       "text": "text",
-      "url": "url"
+      "url": "url",
+      "files": [
+        {
+          "name": "img",
+          "accept": [
+            "image/*"
+          ]
+        }
+      ]
     }
   }
 }
