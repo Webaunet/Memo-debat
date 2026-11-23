@@ -521,7 +521,8 @@ async function sb(path,{method="GET",body,token,prefer}={}){
   const h={apikey:SB_KEY,"Content-Type":"application/json"};
   if(token)h.Authorization="Bearer "+token;
   if(prefer)h.Prefer=prefer;
-  const r=await fetch(SB_URL+path,{method,headers:h,body:body?JSON.stringify(body):undefined});
+  let r;try{r=await fetch(SB_URL+path,{method,headers:h,body:body?JSON.stringify(body):undefined})}
+  catch(x){const e=new Error(navigator.onLine?"Serveur de synchro injoignable (projet Supabase en pause ou bloqué ?)":"Pas de connexion internet");e.net=1;throw e}
   const t=await r.text();let j=null;try{j=t?JSON.parse(t):null}catch(e){}
   if(!r.ok){const e=new Error((j&&(j.msg||j.error_description||j.message||j.error))||("HTTP "+r.status));e.status=r.status;throw e}
   return j;
@@ -579,12 +580,12 @@ async function syncNow(manual){
       else if(lt>rt)await push();
     }
     meta={synced:true,last:now()};lsSet("memoSync",JSON.stringify(meta));syncState="ok";flushImages();
-  }catch(e){syncState=(!navigator.onLine||e instanceof TypeError)?"offline":"err";syncMsg=e.message;if(!auth)syncState="off"}
+  }catch(e){syncState=!navigator.onLine?"offline":e.net?"unreach":"err";syncMsg=(e.net||e.status?"":"Erreur interne : ")+e.message;if(!auth)syncState="off";try{console.error("synchro",e)}catch(x){}}
   finally{syncBusy=false;updSync();if(syncAgain){syncAgain=false;queuePush()}}
 }
 function rerender(){if($("#sh")||$("#rv")||/^#\/[er]\//.test(location.hash))return;route()}
-function syncLabel(){return{off:"Non connecté",busy:"Synchronisation…",dirty:"À synchroniser…",ok:"Synchronisé",offline:"Hors ligne — synchro plus tard",err:"Erreur de synchro"}[syncState]||""}
-function syncDot(){return{ok:"",busy:"w",dirty:"w",offline:"o",off:"o",err:"e"}[syncState]||""}
+function syncLabel(){return{off:"Non connecté",busy:"Synchronisation…",dirty:"À synchroniser…",ok:"Synchronisé",offline:"Hors ligne — synchro plus tard",unreach:"Serveur injoignable — voir Compte",err:"Erreur de synchro — voir Compte"}[syncState]||""}
+function syncDot(){return{ok:"",busy:"w",dirty:"w",offline:"o",off:"o",err:"e",unreach:"e"}[syncState]||""}
 function updSync(){document.querySelectorAll(".sync").forEach(e=>{e.innerHTML=`<span class="dot ${syncDot()}"></span>${syncLabel()}`})}
 
 /* ===== Dictée / recherche vocale ===== */
@@ -983,7 +984,7 @@ ${typeof gemCard==="function"?gemCard():""}
 <a class="card row" href="#/x"><span class="sp"><b>Corbeille</b><br><span class="mu">Fiches supprimées, gardées 30 jours</span></span><span class="cnt">${(db.trash||[]).length}</span>${ic("chev",18)}</a>
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 12 (24/11)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 12a (24/11)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   $("#revM").onchange=e=>{lsSet("memo_rev",e.target.value);toast("Délai enregistré : "+e.target.value+" mois.")};
   const lf=$("#lf");
