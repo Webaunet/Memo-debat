@@ -74,7 +74,9 @@ textarea{resize:vertical;min-height:90px;font-family:var(--ser);font-size:16px}
 .tabs a.on{color:var(--pr);font-weight:600}
 .fab{position:fixed;right:max(20px,calc(50% - 340px));bottom:calc(84px + env(safe-area-inset-bottom));z-index:6;width:60px;height:60px;border-radius:20px;background:var(--pr);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(31,58,95,.35)}
 .bb{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--bg);border-top:1px solid var(--ln);padding:12px 20px calc(18px + env(safe-area-inset-bottom))}
-.bb>div{max-width:720px;margin:0 auto;display:flex;gap:10px}.bb .btn{flex:1}
+.bb>div{max-width:720px;margin:0 auto;display:flex;gap:10px}.bb .btn{flex:1;min-width:0}
+.bb>div+div{margin-top:8px}.bb .nv{align-items:center}.bb .nv .btn{min-height:54px;padding:0 6px;min-width:0;gap:4px}.bb .nv .btn:first-child{padding-right:12px}.bb .nv .btn:last-child{padding-left:12px}.bb .nv .btn[disabled]{opacity:.35}.bb .pos{flex:0 0 auto;min-width:58px;text-align:center;color:var(--mu);font-size:14px}.bb .ic1{flex:0 0 54px;padding:0}.rot{display:inline-flex;transform:rotate(180deg)}
+mark{background:var(--hl);color:#1C1B19;border-radius:3px;padding:0 1px}
 .meta{background:var(--sf);border:1px solid var(--ln);border-radius:16px}
 .meta>div{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:46px;padding:8px 16px;font-size:14px}
 .meta>div+div{border-top:1px solid #EEEAE0}
@@ -529,24 +531,57 @@ function tabs(on){
 const fab=s=>`<button class="fab" data-a="sheet" data-s="${s||""}" aria-label="Ajouter une fiche">${ic("plus",26)}</button>`;
 function badge(c){const t=typeOf(c);return`<span class="tb" style="--b:${t[2]};--f:${t[3]};--db:${t[4]};--df:${t[5]}">${t[1]}</span>`}
 function starBtn(it,sid){return`<button class="star ${it.star?"on":""}" data-a="star" data-s="${sid}" data-i="${it.id}" aria-label="${it.star?"Retirer de l’antisèche":"Mettre en antisèche"}" aria-pressed="${it.star?"true":"false"}">${ic("star",24)}</button>`}
-function itemCard(it,sid,label){
+function itemCard(it,sid,label,T){
   const sl=srcLabel(it);
   return`<a class="card it" href="#/f/${sid}/${it.id}"><div class="top">${badge(it.type)}${starBtn(it,sid)}</div>
-<p class="txt">${esc(it.text||it.url)}</p>${imgsHTML(it)}
+<p class="txt">${T&&T.length?hl(it.text||it.url,T):esc(it.text||it.url)}</p>${imgsHTML(it)}
 ${sl||label?`<div class="src">${ic("book",16)}<span>${esc([label,sl].filter(Boolean).join(" · "))}</span></div>`:""}
 ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<span class="chip sm">#${esc(t)}</span>`).join("")}</div>`:""}</a>`;
 }
 function allTags(){const m=new Map();allSubs().forEach(x=>x.sub.items.forEach(i=>(i.tags||[]).forEach(t=>m.set(t,(m.get(t)||0)+1))));return[...m.entries()].sort((a,b)=>b[1]-a[1]).map(x=>x[0])}
-function search(q){
-  q=q.trim().toLowerCase();if(!q)return[];
-  const tag=q[0]==="#"?q.slice(1):null,out=[];
-  allSubs().forEach(({theme,sub})=>sub.items.forEach(i=>{
-    const s=srcOf(i),hay=[i.text,i.cite,(i.tags||[]).join(" "),s?s.title+" "+s.author:"",i.url,sub.name,theme.name].join(" ").toLowerCase();
-    if(tag!==null?(i.tags||[]).some(t=>t.toLowerCase()===tag):q.split(/\s+/).every(w=>hay.includes(w)))out.push([i,sub.id,theme.name+" › "+sub.name]);
-  }));
-  return out;
+// recherche : accents, majuscules et espace avant « % » ignorés ; classement par pertinence (texte > étiquettes > source > sujet) ; mots entiers d'abord
+const fold1=c=>{const d=c.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();return d[0]||c};
+const sfold=x=>[...String(x||"")].map(fold1).join("").replace(/\s*%/g,"%");
+const wst=(h,w)=>(" "+h.replace(/[^\p{L}\p{N}%]+/gu," ")).includes(" "+w);
+const hlToks=v=>v.trim().split(/\s+/).map(w=>[...w].map(fold1).join("")).filter(w=>w&&w[0]!=="#");
+function hl(text,T){
+  const cp=[...String(text)],f=cp.map(fold1),on=new Uint8Array(cp.length);
+  for(const w of T){const a=[...w];for(let i=0;i+a.length<=f.length;i++){let k=1;for(let j=0;j<a.length;j++)if(f[i+j]!==a[j]){k=0;break}if(k)for(let j=0;j<a.length;j++)on[i+j]=1}}
+  let o="",cur="",m=0;const fl=()=>{if(cur){o+=m?"<mark>"+esc(cur)+"</mark>":esc(cur);cur=""}};
+  cp.forEach((c,i)=>{if(on[i]!==m){fl();m=on[i]}cur+=c});fl();return o;
 }
-
+function search(q){
+  const raw=q.trim();if(!raw)return[];
+  const tag=raw[0]==="#"?sfold(raw.slice(1)):null,T=sfold(raw).split(/\s+/).filter(Boolean),rows=[];
+  allSubs().forEach(({theme,sub})=>sub.items.forEach(i=>{
+    const lab=theme.name+" › "+sub.name;
+    if(tag!==null){if((i.tags||[]).some(t=>sfold(t)===tag))rows.push([i,sub.id,lab,0,0]);return}
+    const s=srcOf(i),F={t:sfold(i.text),c:sfold(i.cite),g:sfold((i.tags||[]).join(" ")),s:sfold(s?s.title+" "+s.author:""),u:sfold(i.url),n:sfold(sub.name+" "+theme.name)};
+    let miss=0,sc=0;
+    for(const w of T){
+      const v=Math.max(wst(F.t,w)?5:F.t.includes(w)?3:0,wst(F.g,w)?4:F.g.includes(w)?3:0,wst(F.s,w)?3:F.s.includes(w)?2:0,F.c.includes(w)?2:0,F.n.includes(w)?1:0,F.u.includes(w)?1:0);
+      if(v)sc+=v;else miss++;
+    }
+    if(miss<T.length)rows.push([i,sub.id,lab,sc,miss]);
+  }));
+  let out=rows.filter(r=>!r[4]);const partial=!out.length&&T.length>1&&rows.length>0;
+  if(partial)out=rows;
+  out.sort((a,b)=>a[4]-b[4]||b[3]-a[3]||(b[0].star?1:0)-(a[0].star?1:0)||(b[0].u||0)-(a[0].u||0));
+  out.partial=partial;return out;
+}
+// fiche précédente / suivante : dans l'ordre de la liste d'où l'on vient (sujet, résultats de recherche), sinon dans le sujet
+let navCtx=null,lastQ="",keepQ=false;
+function navOf(sid,iid){
+  let ids=navCtx&&navCtx.ids.some(x=>x[1]===iid)?navCtx.ids:null,name=ids?navCtx.name:"";
+  if(!ids){const f=findSub(sid);if(!f)return null;ids=f.sub.items.map(i=>[sid,i.id]);name=f.sub.name}
+  ids=ids.filter(x=>{const f=findSub(x[0]);return f&&f.sub.items.some(i=>i.id===x[1])});
+  const k=ids.findIndex(x=>x[1]===iid);return k<0?null:{k,n:ids.length,ids,name};
+}
+function fnav(d){
+  const m=location.hash.match(/^#\/f\/([^/]+)\/([^/]+)/);if(!m)return;
+  const nv=navOf(m[1],m[2]),t=nv&&nv.ids[nv.k+d];if(!t)return;
+  location.replace("#/f/"+t[0]+"/"+t[1]);
+}
 /* ===== Vues ===== */
 function home(){
   const tags=allTags();
@@ -564,11 +599,15 @@ ${tags.length?`<div class="chips">${tags.slice(0,12).map(t=>`<button class="chip
   const q=$("#q");
   q.oninput=()=>{
     const v=q.value.trim();
-    if(!v){$("#res").innerHTML="";$("#main").style.display="";return}
+    lastQ=v;
+    if(!v){navCtx=null;$("#res").innerHTML="";$("#main").style.display="";return}
     $("#main").style.display="none";
-    const r=search(v);
-    $("#res").innerHTML=r.length?`<p class="mu" style="margin:0">${r.length} fiche${r.length>1?"s":""}</p>`+r.map(x=>itemCard(x[0],x[1],x[2])).join(""):'<p class="mu">Rien trouvé.</p>';
+    const r=search(v),T=hlToks(v);
+    navCtx={name:"Résultats",ids:r.map(x=>[x[1],x[0].id])};
+    $("#res").innerHTML=r.length?`<p class="mu" style="margin:0">${r.length} fiche${r.length>1?"s":""}${r.partial?" contenant au moins un des mots":""}</p>`+r.map(x=>itemCard(x[0],x[1],x[2],T)).join(""):'<p class="mu">Rien trouvé. Essaie un seul mot, ou le début du mot.</p>';
   };
+  $("#res").addEventListener("click",e=>{if(e.target.closest("a.it"))keepQ=true});
+  const kq=keepQ?lastQ:"";keepQ=false;if(kq){q.value=kq;q.oninput()}
   updSync();
 }
 function themePage(id){
@@ -587,6 +626,7 @@ function subPage(id){
   const{theme,sub}=f,types=[...new Set(sub.items.map(i=>i.type))];
   if(flt!=="all"&&flt!=="star"&&!types.includes(flt))flt="all";
   const items=sub.items.filter(i=>flt==="all"||(flt==="star"?i.star:i.type===flt));
+  navCtx={name:sub.name,ids:items.map(i=>[id,i.id])};
   $("#app").innerHTML=`<div class="wrap">
 <div class="bar"><a href="#/h/${theme.id}" class="back">${ic("back")}${esc(theme.name)}</a><a href="#/a/${id}" class="btn hl" style="min-height:40px;border-radius:99px;font-size:14px">${ic("star",16)}Antisèche</a></div>
 <h1 class="ser">${esc(sub.name)}</h1>
@@ -599,9 +639,9 @@ function subPage(id){
 function fiche(sid,iid){
   const f=findSub(sid),it=f&&f.sub.items.find(x=>x.id===iid);if(!it)return go(f?"#/t/"+sid:"#/");
   const s=srcOf(it),same=s?allSubs().reduce((n,x)=>n+x.sub.items.filter(i=>i.src===s.id&&i.id!==it.id).length,0):0;
-  const row=(k,v)=>v?`<div><span>${k}</span><b>${v}</b></div>`:"";
-  $("#app").innerHTML=`<div class="wrap">
-<div class="bar"><a href="#/t/${sid}" class="back">${ic("back")}${esc(f.sub.name)}</a><a href="#/e/${sid}/${iid}" class="btn gh" aria-label="Modifier">${ic("edit")}Modifier</a></div>
+  const row=(k,v)=>v?`<div><span>${k}</span><b>${v}</b></div>`:"",nv=navOf(sid,iid);
+  $("#app").innerHTML=`<div class="wrap" style="padding-bottom:${nv&&nv.n>1?250:170}px">
+<div class="bar"><a href="#/t/${sid}" class="back">${ic("back")}${esc(f.sub.name)}</a></div>
 <div class="stack" style="margin-top:6px"><span>${badge(it.type)}</span>
 ${bigTxt(it.text||it.url)}${media(it.url)}
 ${it.imgs&&it.imgs.length?`<div class="gal">${it.imgs.map(i=>`<img data-img="${i}" data-a="zoom" alt="">`).join("")}</div>`:""}
@@ -610,7 +650,7 @@ ${s?`<a class="srcbox" href="#/r/${s.id}"><span class="bk">${ic("book",22)}</spa
 ${it.page||it.verified||it.url?`<div class="meta">${row("Page / minutage",esc(pageLabel(it)))}${row("Vérifié le",esc(fmtDate(it.verified)))}${it.url?`<div><span>Lien</span><b>${safeUrl(it.url)?`<a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,40))}</a>`:esc(it.url.slice(0,40))}</b></div>`:""}</div>`:""}
 ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<button class="chip sm" data-a="tag" data-t="${esc(t)}">#${esc(t)}</button>`).join("")}</div>`:""}
 </div></div>
-<div class="bb"><div><button class="btn hl" data-a="star2" data-s="${sid}" data-i="${iid}">${ic("star",20)}${it.star?"Dans l’antisèche":"Ajouter à l’antisèche"}</button><button class="btn" style="flex:0 0 140px" data-a="share" data-s="${sid}" data-i="${iid}">${ic("share",20)}Partager</button></div></div>`;
+<div class="bb">${nv&&nv.n>1?`<div class="nv"><button class="btn" data-a="nav" data-d="-1"${nv.k<=0?" disabled":""} aria-label="Fiche précédente"><span class="rot">${ic("chev",20)}</span>Précédente</button><span class="pos" aria-live="polite">${nv.k+1} / ${nv.n}</span><button class="btn" data-a="nav" data-d="1"${nv.k>=nv.n-1?" disabled":""} aria-label="Fiche suivante">Suivante${ic("chev",20)}</button></div>`:""}<div><button class="btn hl" data-a="star2" data-s="${sid}" data-i="${iid}">${ic("star",20)}${it.star?"Dans l’antisèche":"Antisèche"}</button><button class="btn" style="flex:0 1 112px;padding:0 10px" data-a="share" data-s="${sid}" data-i="${iid}">${ic("share",20)}Partager</button><a class="btn ic1" href="#/e/${sid}/${iid}" aria-label="Modifier">${ic("edit",22)}</a></div></div>`;
 }
 /* ===== Classement automatique (sans IA : mots-clés, même livre, thème du livre) ===== */
 const STOPW=new Set("avec dans pour par sur sous cette cela celui celle ceux elles ils nous vous sont etre avoir fait faire plus moins tres aussi comme mais donc leur leurs entre vers chez sans depuis alors ainsi apres avant dont quand tout tous toute toutes autre autres meme ete etait ont the and that this with from have for are was were their which about into more than temps fois chose choses monde partie facon jour jours annee annees gens personne personnes lorsque lors selon encore toujours jamais devez doivent peuvent peut bien bon bonne quelque quelques plusieurs chaque notre votre vos nos ces ses graphique graphiques image images".split(" "));
@@ -766,7 +806,7 @@ function cheat(id){
 <div id="al" class="stack" style="margin:0"></div></div></div>
 <div class="bb noprint"><div><button class="btn" data-a="a6">${ic("print",18)}Cartes A6</button><button class="btn" data-a="exp" data-s="${id}">${ic("share",18)}PDF / Word</button></div></div></div>`;
   const fl=()=>{
-    const v=aq.trim().toLowerCase(),r=all.filter(([i])=>!v||[i.text,i.cite,(i.tags||[]).join(" "),srcLabel(i)].join(" ").toLowerCase().includes(v));
+    const T=sfold(aq).split(/\s+/).filter(Boolean),r=all.filter(([i])=>{const h=sfold([i.text,i.cite,(i.tags||[]).join(" "),srcLabel(i)].join(" "));return T.every(w=>h.includes(w))});
     $("#al").innerHTML=r.map(([i,sid,lab])=>`<div class="card it"><div class="top">${badge(i.type)}</div><p class="txt">${esc(i.text||i.url)}</p>${imgsHTML(i,true)}${i.cite&&i.cite!==i.text?`<p class="cite" style="font-size:15px;color:#C9C6BD">« ${esc(i.cite)} »</p>`:""}${srcLabel(i)||lab?`<div class="src">${esc([lab,srcLabel(i)].filter(Boolean).join(" · "))}</div>`:""}</div>`).join("")||`<p class="mu">${all.length?"Aucune fiche ne correspond.":"Aucune fiche étoilée ici. Touche l’étoile d’une fiche pour la mettre en antisèche."}</p>`;
   };
   $("#aq").oninput=e=>{aq=e.target.value;fl()};fl();
@@ -786,7 +826,7 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 ${typeof gemCard==="function"?gemCard():""}
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 7 (23/11, 22 h)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 8 (23/11, 23 h)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   const lf=$("#lf");
   if(lf){
@@ -856,6 +896,17 @@ function route(){
 }
 addEventListener("hashchange",()=>{flt="all";aq="";route()});
 
+// balayage horizontal sur une fiche : gauche = suivante, droite = précédente (pas depuis les bords : réservés au geste « retour »)
+let swp=null;
+document.addEventListener("touchstart",e=>{
+  swp=null;if(!/^#\/f\//.test(location.hash)||e.touches.length!==1)return;
+  const t=e.touches[0];if(t.clientX<28||t.clientX>innerWidth-28||e.target.closest("textarea,input,select,.gal,.ov,iframe,video,a.srcbox"))return;
+  swp={x:t.clientX,y:t.clientY,t:Date.now()};
+},{passive:true});
+document.addEventListener("touchend",e=>{
+  if(!swp)return;const t=e.changedTouches[0],dx=t.clientX-swp.x,dy=t.clientY-swp.y,dt=Date.now()-swp.t;swp=null;
+  if(Math.abs(dx)>70&&Math.abs(dy)<45&&Math.abs(dx)>2*Math.abs(dy)&&dt<700)fnav(dx<0?1:-1);
+},{passive:true});
 document.addEventListener("click",e=>{
   const b=e.target.closest("[data-a]");if(!b)return;
   const a=b.dataset.a,sid=b.dataset.s,iid=b.dataset.i,tid=b.dataset.t;
@@ -868,6 +919,7 @@ document.addEventListener("click",e=>{
   else if(a==="renSub"){const f=findSub(sid),n=prompt("Nouveau nom",f.sub.name);if(n&&n.trim()){f.sub.name=n.trim();f.sub.u=now();save();subPage(sid)}}
   else if(a==="delSub"){const f=findSub(sid);if(confirm("Supprimer le sujet « "+f.sub.name+" » et ses "+f.sub.items.length+" fiche(s) ?")){dropImgs(f.sub.items.flatMap(i=>i.imgs||[]));f.theme.subs=f.theme.subs.filter(x=>x!==f.sub);save();go("#/h/"+f.theme.id)}}
   else if(a==="flt"){flt=b.dataset.f;subPage(location.hash.split("/")[2])}
+  else if(a==="nav")fnav(+b.dataset.d);
   else if(a==="star"||a==="star2"){
     const f=findSub(sid),it=f.sub.items.find(x=>x.id===iid);it.star=it.star?0:1;it.u=now();save();
     if(a==="star2")fiche(sid,iid);else route();
