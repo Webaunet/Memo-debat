@@ -36,6 +36,7 @@ h2.sec{margin:0;font-size:13px;font-weight:600;letter-spacing:.06em;text-transfo
 .txt{margin:0;font-family:var(--ser);font-size:17px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
 .it .txt{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden}
 .src{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mu)}
+.rel{display:inline-block;width:11px;height:11px;border-radius:50%;flex:0 0 11px;vertical-align:middle;margin-right:4px}.tb.rv{--b:#FDE7E4;--f:#9B1C1C;--db:#4A1D1D;--df:#FFB4AB;margin-left:6px}
 .tb{display:inline-block;font-size:12px;font-weight:600;padding:4px 10px;border-radius:99px;background:var(--b);color:var(--f)}
 .top{display:flex;align-items:center;justify-content:space-between}
 .star{width:44px;height:44px;margin:-8px -8px -8px 0;display:flex;align-items:center;justify-content:center;color:var(--mu)}
@@ -225,10 +226,27 @@ function unAlso(sid){allSubs().forEach(x=>x.sub.items.forEach(i=>{if((i.also||[]
 function toTrash(it,f){db.trash=db.trash||[];db.trash.unshift({it,sid:f.sub.id,sub:f.sub.name,theme:f.theme.name,at:now()})}
 function purgeTrash(){const lim=Date.now()-30*864e5,old=(db.trash||[]).filter(x=>new Date(x.at).getTime()<lim);if(!old.length)return;dropImgs(old.flatMap(x=>x.it.imgs||[]));db.trash=db.trash.filter(x=>!old.includes(x));save()}
 const safeUrl=u=>/^https?:\/\//i.test(u||"")?u:"";
-function media(u){
+// fiabilité d'une source (pastille), fiche à revérifier (date de vérification trop ancienne), minutage
+const REL={ok:["Solide","#2E7D32"],mid:["À recouper","#E08A00"],bad:["Fragile","#C62828"]};
+const relDot=s=>s&&REL[s.rel]?`<span class="rel" style="background:${REL[s.rel][1]}" title="Fiabilité : ${REL[s.rel][0]}" aria-label="Fiabilité : ${REL[s.rel][0]}"></span>`:"";
+const revMonths=()=>+(lsGet("memo_rev")||6);
+const needRev=it=>{if(!it.verified)return false;const d=new Date(it.verified);if(isNaN(d))return false;d.setMonth(d.getMonth()+revMonths());return d<new Date()};
+const revBadge=it=>needRev(it)?`<span class="tb rv">À revérifier</span>`:"";
+function tsec(p){const m=String(p||"").match(/(?:(\d{1,2}):)?(\d{1,3}):(\d{2})(?!\d)/);return m?(+(m[1]||0))*3600+(+m[2])*60+(+m[3]):0}
+const ytId=u=>{const y=String(u||"").match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/);return y?y[1]:""};
+const hms=t=>(t>=3600?Math.floor(t/3600)+":"+String(Math.floor(t%3600/60)).padStart(2,"0"):Math.floor(t/60))+":"+String(t%60).padStart(2,"0");
+function jumpBtn(it){const t=tsec(it.page),u=safeUrl(it.url);if(!t||!u)return"";const y=ytId(u),h=y?"https://youtu.be/"+y+"?t="+t:u.split("#")[0]+"#t="+t;return`<a class="btn" href="${esc(h)}" target="_blank" rel="noopener" style="align-self:flex-start">${ic("chev",18)}Écouter / voir à ${hms(t)}</a>`}
+// titre, auteur, date d'une page web (service gratuit Microlink : il reçoit l'adresse de la page)
+async function linkMeta(url){
+  const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),8000);
+  try{const r=await fetch("https://api.microlink.io/?url="+encodeURIComponent(url),{signal:ctl.signal});const j=await r.json();const d=j&&j.status==="success"&&j.data;if(!d||!d.title)return null;
+    return{title:clip(d.title,160),author:clip(d.author||d.publisher||"",80),year:((d.date||"").match(/\d{4}/)||[""])[0],site:clip(d.publisher||"",60)}}
+  catch(e){return null}finally{clearTimeout(to)}
+}
+function media(u,t){
   u=safeUrl(u);if(!u)return"";
-  const y=u.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
-  if(y)return`<div class="med"><iframe src="https://www.youtube.com/embed/${y[1]}" allowfullscreen loading="lazy"></iframe></div>`;
+  const y=ytId(u);
+  if(y)return`<div class="med"><iframe src="https://www.youtube.com/embed/${y}${t?"?start="+t:""}" allowfullscreen loading="lazy"></iframe></div>`;
   if(/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u))return`<div class="med"><img src="${esc(u)}" alt="" loading="lazy"></div>`;
   return"";
 }
@@ -574,9 +592,9 @@ function badge(c){const t=typeOf(c);return`<span class="tb" style="--b:${t[2]};-
 function starBtn(it,sid){return`<button class="star ${it.star?"on":""}" data-a="star" data-s="${sid}" data-i="${it.id}" aria-label="${it.star?"Retirer de l’antisèche":"Mettre en antisèche"}" aria-pressed="${it.star?"true":"false"}">${ic("star",24)}</button>`}
 function itemCard(it,sid,label,T){
   const sl=srcLabel(it);
-  return`<a class="card it" href="#/f/${sid}/${it.id}"><div class="top">${badge(it.type)}${starBtn(it,sid)}</div>
+  return`<a class="card it" href="#/f/${sid}/${it.id}"><div class="top"><span>${badge(it.type)}${revBadge(it)}</span>${starBtn(it,sid)}</div>
 <p class="txt">${T&&T.length?hl(it.text||it.url,T):esc(it.text||it.url)}</p>${imgsHTML(it)}
-${sl||label?`<div class="src">${ic("book",16)}<span>${esc([label,sl].filter(Boolean).join(" · "))}</span></div>`:""}
+${sl||label?`<div class="src">${ic("book",16)}<span>${relDot(srcOf(it))}${esc([label,sl].filter(Boolean).join(" · "))}</span></div>`:""}
 ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<span class="chip sm">#${esc(t)}</span>`).join("")}</div>`:""}</a>`;
 }
 function allTags(){const m=new Map();allSubs().forEach(x=>x.sub.items.forEach(i=>(i.tags||[]).forEach(t=>m.set(t,(m.get(t)||0)+1))));return[...m.entries()].sort((a,b)=>b[1]-a[1]).map(x=>x[0])}
@@ -665,15 +683,15 @@ let flt="all";
 function subPage(id){
   const f=findSub(id);if(!f)return go("#/");
   const{theme,sub}=f,pairs=subItems(sub),types=[...new Set(pairs.map(x=>x[0].type))];
-  if(flt!=="all"&&flt!=="star"&&!types.includes(flt))flt="all";
-  const items=pairs.filter(([i])=>flt==="all"||(flt==="star"?i.star:i.type===flt));
+  if(flt!=="all"&&flt!=="star"&&flt!=="rev"&&!types.includes(flt))flt="all";
+  const items=pairs.filter(([i])=>flt==="all"||(flt==="star"?i.star:flt==="rev"?needRev(i):i.type===flt));
   navCtx={name:sub.name,ids:items.map(([i,h])=>[h,i.id])};
   $("#app").innerHTML=`<div class="wrap">
 <div class="bar"><a href="#/h/${theme.id}" class="back">${ic("back")}${esc(theme.name)}</a><a href="#/a/${id}" class="btn hl" style="min-height:40px;border-radius:99px;font-size:14px">${ic("star",16)}Antisèche</a></div>
 <h1 class="ser">${esc(sub.name)}</h1>
 <p class="mu" style="margin:4px 0 0">${nItems(sub)} fiche${nItems(sub)>1?"s":""} · ${nStar(sub)} en antisèche <button class="btn gh" data-a="renSub" data-s="${id}" style="min-height:28px">Renommer</button><button class="btn gh dg" data-a="delSub" data-s="${id}" style="min-height:28px">Supprimer</button></p>
 <div class="chips" style="margin-top:10px"><button class="chip sm" data-a="shareSub" data-s="${id}">Partager le sujet</button><button class="chip sm" data-a="docSub" data-s="${id}">Exporter en Word</button></div>
-<div class="chips scroll" style="margin-top:12px"><button class="chip ${flt==="all"?"on":""}" data-a="flt" data-f="all">Tout</button><button class="chip ${flt==="star"?"on":""}" data-a="flt" data-f="star">En antisèche</button>${types.map(c=>`<button class="chip ${flt===c?"on":""}" data-a="flt" data-f="${c}">${typeOf(c)[1]}</button>`).join("")}</div>
+<div class="chips scroll" style="margin-top:12px"><button class="chip ${flt==="all"?"on":""}" data-a="flt" data-f="all">Tout</button><button class="chip ${flt==="star"?"on":""}" data-a="flt" data-f="star">En antisèche</button>${pairs.some(([i])=>needRev(i))?`<button class="chip ${flt==="rev"?"on":""}" data-a="flt" data-f="rev">À revérifier</button>`:""}${types.map(c=>`<button class="chip ${flt===c?"on":""}" data-a="flt" data-f="${c}">${typeOf(c)[1]}</button>`).join("")}</div>
 <div class="stack">${items.map(([i,h])=>itemCard(i,h,h!==id?"Aussi dans ce sujet":"")).join("")||'<p class="mu">Rien ici pour le moment. Touche + pour ajouter une fiche.</p>'}</div>
 </div>${fab(id)}${tabs("h")}`;
 }
@@ -685,13 +703,14 @@ function fiche(sid,iid){
   const row=(k,v)=>v?`<div><span>${k}</span><b>${v}</b></div>`:"",nv=navOf(sid,iid);
   $("#app").innerHTML=`<div class="wrap" style="padding-bottom:${nv&&nv.n>1?250:170}px">
 <div class="bar"><a href="#/t/${sid}" class="back">${ic("back")}${esc(f.sub.name)}</a></div>
-<div class="stack" style="margin-top:6px"><span>${badge(it.type)}</span>
-${bigTxt(it.text||it.url)}${media(it.url)}
+<div class="stack" style="margin-top:6px"><span>${badge(it.type)}${revBadge(it)}</span>
+${bigTxt(it.text||it.url)}${media(it.url,tsec(it.page))}${jumpBtn(it)}
 ${it.imgs&&it.imgs.length?`<div class="gal">${it.imgs.map(i=>`<img data-img="${i}" data-a="zoom" alt="">`).join("")}</div>`:""}
 ${it.cite&&it.cite!==it.text?`<div class="card"><h2 class="sec">Citation exacte</h2><p class="cite">« ${esc(it.cite)} »</p></div>`:""}
-${s?`<a class="srcbox" href="#/r/${s.id}"><span class="bk">${ic("book",22)}</span><span class="sp"><span class="ct" style="font-size:17px">${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind!=="Autre"?s.kind:""].filter(Boolean).join(" · "))}</span>${same?`<br><span style="font-size:13px;color:var(--pr);font-weight:500">${same} autre${same>1?"s":""} fiche${same>1?"s":""} de cette source</span>`:""}</span>${ic("chev",18)}</a>`:""}
-${it.page||it.verified||it.url?`<div class="meta">${row("Page / minutage",esc(pageLabel(it)))}${row("Vérifié le",esc(fmtDate(it.verified)))}${it.url?`<div><span>Lien</span><b>${safeUrl(it.url)?`<a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,40))}</a>`:esc(it.url.slice(0,40))}</b></div>`:""}</div>`:""}
+${s?`<a class="srcbox" href="#/r/${s.id}"><span class="bk">${ic("book",22)}</span><span class="sp"><span class="ct" style="font-size:17px">${relDot(s)}${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind!=="Autre"?s.kind:"",REL[s.rel]?"fiabilité : "+REL[s.rel][0].toLowerCase():""].filter(Boolean).join(" · "))}</span>${same?`<br><span style="font-size:13px;color:var(--pr);font-weight:500">${same} autre${same>1?"s":""} fiche${same>1?"s":""} de cette source</span>`:""}</span>${ic("chev",18)}</a>`:""}
+${it.page||it.verified||it.url?`<div class="meta">${row("Page / minutage",esc(pageLabel(it)))}${row("Vérifié le",esc(fmtDate(it.verified))+(needRev(it)?" (plus de "+revMonths()+" mois)":""))}${it.url?`<div><span>Lien</span><b>${safeUrl(it.url)?`<a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,40))}</a>`:esc(it.url.slice(0,40))}</b></div>`:""}</div>`:""}
 ${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<button class="chip sm" data-a="tag" data-t="${esc(t)}">#${esc(t)}</button>`).join("")}</div>`:""}
+${it.type==="chi"||it.verified?`<button class="btn gh" data-a="verNow" data-s="${sid}" data-i="${iid}" style="align-self:flex-start">${ic("check",18)}Vérifié aujourd’hui</button>`:""}
 ${also.length?`<p class="mu" style="margin:0">Aussi dans : ${also.map(x=>`<a href="#/t/${x.sub.id}" style="color:var(--pr)">${esc(x.theme.name)} › ${esc(x.sub.name)}</a>`).join(", ")}</p>`:""}
 <div class="bar" style="margin-top:6px"><h2 class="sec">Fiches liées${lk.length?" ("+lk.length+")":""}</h2><button class="lnk" data-a="link" data-s="${sid}" data-i="${iid}">Lier une fiche</button></div>
 ${lk.map(x=>`<div class="lkw">${itemCard(x.it,x.sub.id,x.theme.name+" › "+x.sub.name)}<button class="btn gh" data-a="unlink" data-s="${sid}" data-i="${iid}" data-t="${x.it.id}">Retirer le lien</button></div>`).join("")}
@@ -806,7 +825,7 @@ function editPage(sid,iid){
 <div id="fN" hidden><input id="fNT" placeholder="Titre de la nouvelle source"><select id="fNK" style="margin-top:6px">${KINDS.map(k=>`<option>${k}</option>`).join("")}</select></div>
 <div class="g3" style="grid-template-columns:1fr 1fr"><div><label class="lbl" for="fP">Page / minutage</label><input id="fP" value="${esc(d.page||"")}" placeholder="p. 112 ou 23:40"></div>
 <div><label class="lbl" for="fV">Vérifié le</label><input id="fV" type="date" value="${esc(d.verified||"")}"></div></div>
-<label class="lbl" for="fU">Lien (page, vidéo YouTube, image)</label><input id="fU" type="url" value="${esc(d.url||"")}" placeholder="https://…">
+<label class="lbl" for="fU">Lien (page, vidéo YouTube, image)</label><input id="fU" type="url" value="${esc(d.url||"")}" placeholder="https://…"><p class="mu" id="fUH" style="margin:4px 0 0;font-size:13px">Pour un nouveau lien, le titre, l’auteur et la date de la page sont proposés automatiquement.</p>
 <label class="lbl">Images (photo, capture, graphique)</label><div id="fI" class="imgs"></div><button type="button" class="btn" data-a="addimg" style="margin-top:8px;min-height:44px">${ic("img",18)}Ajouter une image</button>
 <button type="button" class="btn" data-a="reread" style="margin-top:8px;min-height:44px">${ic("img",18)}Relire le texte de l’image</button>
 <details id="diag" class="card" style="margin-top:10px"${d.diag?"":" hidden"}><summary>Détails de la lecture</summary><pre id="diagT" style="white-space:pre-wrap;word-break:break-word;font-size:12px;margin:8px 0 0">${esc(d.diag||"")}</pre></details>
@@ -829,7 +848,7 @@ function editPage(sid,iid){
     const text=$("#fX").value.trim(),url=$("#fU").value.trim();
     if(!text&&!url){toast("Écris un texte ou colle un lien.");return}
     let src=$("#fR").value;
-    if(src==="__new"){const t=$("#fNT").value.trim();const ns=d.newSrc||window.rereadNS||{};src=t?newSource({title:t,kind:$("#fNK").value,url:ns.url||"",author:ns.author||"",year:ns.year||"",note:ns.note||"",cat:ns.cat||""}):""}
+    if(src==="__new"){const t=$("#fNT").value.trim();const ns={...(d.newSrc||window.rereadNS||{}),...(metaNS||{})};src=t?newSource({title:t,kind:$("#fNK").value,url:ns.url||"",author:ns.author||"",year:ns.year||"",note:ns.note||"",cat:ns.cat||""}):""}
     const tags=[...new Set($("#fG").value.split(",").map(x=>x.trim().replace(/^#/,"")).filter(Boolean))];
     const vals={type:$("#fT").value,text,cite:$("#fC").value.trim(),src,page:$("#fP").value.trim(),verified:$("#fV").value,url,tags,imgs:[...fImgs],u:now()};
     const alsoSel=[...document.querySelectorAll("#fA input:checked")].map(x=>x.value);
@@ -845,6 +864,22 @@ function editPage(sid,iid){
     save();go(isNew?"#/t/"+to:"#/f/"+to+"/"+it.id);
     if(placed)toast("Classée dans : "+placed,4000);
   };
+  let metaNS=null,metaU="",srcTouched=!isNew&&!!d.src;$("#fR").addEventListener("change",()=>{srcTouched=true});
+  const fillMeta=async(u,auto)=>{
+    u=(u||"").trim();if(!/^https?:\/\//.test(u)||u===metaU||/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u))return;
+    const r=$("#fR");if(srcTouched&&r.value&&r.value!=="__new")return;
+    metaU=u;$("#fUH").textContent="Lecture du titre de la page…";
+    const m=await linkMeta(u);if(!$("#fUH"))return;
+    if(!m){$("#fUH").textContent="Titre de la page non trouvé : complète la source à la main.";return}
+    if(srcTouched&&r.value&&r.value!=="__new")return;
+    const kind=ytId(u)?"Vidéo":/podcast|spotify|deezer|ausha|anchor/i.test(u)?"Podcast":"Article";
+    metaNS={title:m.title,author:m.author,year:m.year,kind,url:u};
+    const known=db.sources.find(x=>x.url&&x.url===u);if(known){r.value=known.id;$("#fN").hidden=true;$("#fUH").textContent="Source déjà connue : « "+known.title+" ».";hint();return}
+    r.value="__new";$("#fN").hidden=false;const nt=$("#fNT");if(!nt.value||auto)nt.value=m.title;$("#fNK").value=kind;
+    $("#fUH").textContent="Repris de la page : « "+clip(m.title,60)+" »"+(m.author?" — "+m.author:"")+(m.year?" ("+m.year+")":"")+". Vérifie avant d’enregistrer.";hint();
+  };
+  $("#fU").addEventListener("change",()=>fillMeta($("#fU").value));
+  if(isNew&&d.newSrc&&d.newSrc.url&&(d.newSrc.kind==="Site"||d.newSrc.kind==="Vidéo"))fillMeta(d.newSrc.url,true);
   hint();
   if(d.dict)setTimeout(()=>dictate(t=>{const x=$("#fX");x.value=(x.value?x.value+" ":"")+t},document.querySelector("[data-a=dictate]"),true),200);
 }
@@ -853,7 +888,7 @@ function sourcesPage(){
   const cnt=s=>allSubs().reduce((n,x)=>n+x.sub.items.filter(i=>i.src===s.id).length,0);
   $("#app").innerHTML=`<div class="wrap"><div class="bar"><h1 class="ser">Sources</h1><span class="row" style="gap:8px"><button class="btn" data-a="bookscan" style="min-height:44px">${ic("cam",18)}Livre</button><a href="#/r/new" class="btn pri" style="min-height:44px">${ic("plus",18)}Nouvelle</a></span></div>
 <p class="mu" style="margin:4px 0 0">Une fiche par œuvre : livre, article, podcast, vidéo…</p>
-<div class="stack">${list.map(s=>`<a class="card row" href="#/r/${s.id}"><span class="bk" style="width:40px;height:50px;border-radius:6px;background:var(--pr);color:#fff;display:flex;align-items:center;justify-content:center">${ic("book",20)}</span><span class="sp"><span class="ct" style="font-size:17px">${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind].filter(Boolean).join(" · "))}</span></span><span class="cnt">${cnt(s)}</span></a>`).join("")||'<p class="mu">Aucune source. Elles se créent aussi toutes seules quand tu ajoutes une fiche.</p>'}</div></div>${tabs("s")}`;
+<div class="stack">${list.map(s=>`<a class="card row" href="#/r/${s.id}"><span class="bk" style="width:40px;height:50px;border-radius:6px;background:var(--pr);color:#fff;display:flex;align-items:center;justify-content:center">${ic("book",20)}</span><span class="sp"><span class="ct" style="font-size:17px">${relDot(s)}${esc(s.title)}</span><br><span class="mu">${esc([s.author,s.year,s.kind].filter(Boolean).join(" · "))}</span></span><span class="cnt">${cnt(s)}</span></a>`).join("")||'<p class="mu">Aucune source. Elles se créent aussi toutes seules quand tu ajoutes une fiche.</p>'}</div></div>${tabs("s")}`;
 }
 function sourcePage(id){
   const isNew=id==="new",s=isNew?{title:"",author:"",year:"",kind:"Livre",url:"",note:""}:db.sources.find(x=>x.id===id);
@@ -866,13 +901,14 @@ function sourcePage(id){
 <label class="lbl" for="sA">Auteur</label><input id="sA" value="${esc(s.author)}">
 <div class="g3" style="grid-template-columns:1fr 1fr"><div><label class="lbl" for="sY">Année</label><input id="sY" value="${esc(s.year)}" inputmode="numeric"></div>
 <div><label class="lbl" for="sK">Type</label><select id="sK">${KINDS.map(k=>`<option${k===s.kind?" selected":""}>${k}</option>`).join("")}</select></div></div>
+<label class="lbl" for="sR">Fiabilité</label><select id="sR"><option value="">Non notée</option>${Object.entries(REL).map(([k,v])=>`<option value="${k}"${s.rel===k?" selected":""}>${v[0]}</option>`).join("")}</select>
 <label class="lbl" for="sU">Lien</label><input id="sU" type="url" value="${esc(s.url)}" placeholder="https://…">
 <label class="lbl" for="sN">Notes sur l’œuvre</label><textarea id="sN" rows="3">${esc(s.note)}</textarea>
 <div class="row" style="margin-top:16px"><button class="btn pri sp" type="submit">Enregistrer</button>${isNew?"":`<button type="button" class="btn dg" data-a="delSrc" data-r="${id}">Supprimer</button>`}</div></form>
 ${cites.length?`<div class="stack"><h2 class="sec">Fiches de cette source (${cites.length})</h2>${cites.map(c=>itemCard(c[0],c[1],c[2])).join("")}</div>`:""}</div>${tabs("s")}`;
   $("#sf").onsubmit=ev=>{
     ev.preventDefault();
-    const v={title:$("#sT").value.trim(),author:$("#sA").value.trim(),year:$("#sY").value.trim(),kind:$("#sK").value,url:$("#sU").value.trim(),note:$("#sN").value.trim(),u:now()};
+    const v={title:$("#sT").value.trim(),author:$("#sA").value.trim(),year:$("#sY").value.trim(),kind:$("#sK").value,rel:$("#sR").value,url:$("#sU").value.trim(),note:$("#sN").value.trim(),u:now()};
     if(!v.title)return;
     if(isNew){const nid=newSource(v);Object.assign(db.sources.find(x=>x.id===nid),v);save();go("#/r/"+nid)}
     else{Object.assign(s,v);save();toast("Enregistré.",1500);sourcePage(id)}
@@ -915,11 +951,13 @@ ${logged?`<div class="card"><div><b>${esc(auth.user.email)}</b></div><div class=
 <div id="lM" class="mu" role="status"></div>
 <div class="row"><button class="btn pri sp" type="submit">Se connecter</button><button class="btn" type="button" data-a="signup">Créer le compte</button></div></form>`}
 ${typeof gemCard==="function"?gemCard():""}
+<div class="card"><b>Fiches à revérifier</b><p class="mu" style="margin:0">Une fiche est signalée « À revérifier » quand sa date de vérification dépasse :</p><select id="revM">${[3,6,12,24].map(m=>`<option value="${m}"${revMonths()===m?" selected":""}>${m} mois</option>`).join("")}</select></div>
 <a class="card row" href="#/x"><span class="sp"><b>Corbeille</b><br><span class="mu">Fiches supprimées, gardées 30 jours</span></span><span class="cnt">${(db.trash||[]).length}</span>${ic("chev",18)}</a>
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 10 (24/11)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 11 (24/11)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
+  $("#revM").onchange=e=>{lsSet("memo_rev",e.target.value);toast("Délai enregistré : "+e.target.value+" mois.")};
   const lf=$("#lf");
   if(lf){
     const run=async create=>{
@@ -1022,6 +1060,7 @@ document.addEventListener("click",e=>{
   else if(a==="link")linkSheet(sid,iid);
   else if(a==="unlink"){const L=locate(iid),o=locate(tid);if(L)L.it.links=(L.it.links||[]).filter(x=>x!==tid);if(o)o.it.links=(o.it.links||[]).filter(x=>x!==iid);if(L)L.it.u=now();if(o)o.it.u=now();save();fiche(sid,iid)}
   else if(a==="hist")histSheet(sid,iid);
+  else if(a==="verNow"){const L=locate(iid);if(L){const t=new Date(),pad=x=>String(x).padStart(2,"0");L.it.verified=t.getFullYear()+"-"+pad(t.getMonth()+1)+"-"+pad(t.getDate());L.it.u=now();save();fiche(sid,iid);toast("Date de vérification mise à jour.")}}
   else if(a==="trBack"){const x=(db.trash||[])[+tid];if(x){let f=findSub(x.sid);if(!f)f=findSub(commitPlace({theme:x.theme,sub:x.sub}));f.sub.items.unshift(x.it);db.trash.splice(+tid,1);save();trashPage();toast("Restaurée dans « "+f.sub.name+" ».")}}
   else if(a==="trDel"){const x=(db.trash||[])[+tid];if(x&&confirm("Supprimer définitivement cette fiche ? Impossible d’annuler.")){dropImgs(x.it.imgs||[]);db.trash.splice(+tid,1);save();trashPage()}}
   else if(a==="trEmpty"){if(confirm("Vider la corbeille ("+db.trash.length+" fiche(s)) ? Impossible d’annuler.")){dropImgs(db.trash.flatMap(x=>x.it.imgs||[]));db.trash=[];save();trashPage()}}
