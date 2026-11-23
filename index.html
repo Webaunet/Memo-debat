@@ -209,7 +209,7 @@ let db;
   db=migrate(d);if(!db.v)db=migrate(null);
   lsSet("memo",JSON.stringify(db));
 })();
-function save(){db.updated=now();lsSet("memo",JSON.stringify(db));queuePush()}
+function save(){db.updated=now();lsSet("memo",JSON.stringify(db));queuePush();if(typeof queueShares==="function")queueShares()}
 const allSubs=()=>db.themes.flatMap(t=>t.subs.map(s=>({theme:t,sub:s})));
 const findSub=id=>allSubs().find(x=>x.sub.id===id);
 const srcOf=it=>db.sources.find(s=>s.id===it.src);
@@ -374,30 +374,48 @@ const srcInfo=it=>{const s=srcOf(it);return s?{title:s.title,author:s.author,yea
 const pubItem=(it,sub)=>({type:it.type,text:it.text,cite:it.cite,page:it.page,verified:it.verified,url:it.url,tags:it.tags||[],src:srcInfo(it),sub});
 function exportDocx(d){if(!d.items.length){toast("Aucune fiche à exporter.");return}download(docxBlob(d),fileName(d.name)+".docx");toast("Fichier Word créé : "+d.items.length+" fiche"+(d.items.length>1?"s":"")+".")}
 
-/* ===== Lien de partage en lecture seule (un sujet, copie figée, sans images) ===== */
+/* ===== Lien de partage en lecture seule (un sujet) : mis à jour tout seul après chaque modification, images incluses (20 max, réduites) ===== */
 const rid=()=>{const a=new Uint8Array(12);crypto.getRandomValues(a);return[...a].map(x=>x.toString(36).padStart(2,"0").slice(-2)).join("")};
 const shareLink=id=>location.origin+location.pathname+"#/p/"+id;
-function shareSnapshot(f,all){return{v:1,theme:f.theme.name,name:f.sub.name,at:now(),items:subItems(f.sub).map(x=>x[0]).filter(i=>all||i.star).map(i=>pubItem(i))}}
+const SHIMG=20,shImgCache=new Map();
+const shareItems=(f,all)=>subItems(f.sub).map(x=>x[0]).filter(i=>all||i.star);
+const shareHash=(f,all)=>hash32(JSON.stringify([f.theme.name,f.sub.name,shareItems(f,all).map(i=>[pubItem(i),i.imgs||[],srcOf(i)&&srcOf(i).rel])]));
+async function shImg(id){
+  if(shImgCache.has(id))return shImgCache.get(id);
+  let out="";
+  try{const u=await imgUrl(id);if(u){const bm=await createImageBitmap(await(await fetch(u)).blob()),k=Math.min(1,700/Math.max(bm.width,bm.height)),c=document.createElement("canvas");c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);c.getContext("2d").drawImage(bm,0,0,c.width,c.height);out=c.toDataURL("image/jpeg",0.6)}}catch(e){}
+  shImgCache.set(id,out);return out;
+}
+async function shareSnapshot(f,all){
+  let n=0;const items=[];
+  for(const i of shareItems(f,all)){const o=pubItem(i),im=[];for(const id of i.imgs||[]){if(n>=SHIMG)break;const u=await shImg(id);if(u){im.push(u);n++}}if(im.length)o.imgs=im;items.push(o)}
+  return{v:2,theme:f.theme.name,name:f.sub.name,at:now(),items};
+}
 async function pushShare(f,all){
   const tk=await token(),id=f.sub.share?f.sub.share.id:rid();
-  await sb("/rest/v1/shares?on_conflict=id",{method:"POST",token:tk,prefer:"resolution=merge-duplicates,return=minimal",body:{id,user_id:auth.user.id,sub_id:f.sub.id,title:f.sub.name,data:shareSnapshot(f,all)}});
-  f.sub.share={id,all:!!all,at:now()};f.sub.u=now();save();return id;
+  await sb("/rest/v1/shares?on_conflict=id",{method:"POST",token:tk,prefer:"resolution=merge-duplicates,return=minimal",body:{id,user_id:auth.user.id,sub_id:f.sub.id,title:f.sub.name,data:await shareSnapshot(f,all)}});
+  f.sub.share={id,all:!!all,at:now(),h:shareHash(f,all)};f.sub.u=now();save();return id;
 }
 async function stopShare(f){
   const tk=await token();
   await sb("/rest/v1/shares?id=eq."+encodeURIComponent(f.sub.share.id),{method:"DELETE",token:tk});
   delete f.sub.share;f.sub.u=now();save();
 }
+// après une modification : les sujets partagés dont le contenu a changé sont republiés (connecté et en ligne)
+let shT=0;
+function queueShares(){if(!auth)return;clearTimeout(shT);shT=setTimeout(async()=>{
+  for(const f of allSubs()){const sh=f.sub.share;if(!sh||!navigator.onLine)continue;if(sh.h===shareHash(f,sh.all))continue;try{await pushShare(f,sh.all)}catch(e){}}
+},8000)}
 function openShareSheet(sid){
   const f=findSub(sid);if(!f)return;closeSheet();
   const nS=nStar(f.sub),nA=nItems(f.sub);
   const d=document.createElement("div");d.className="ov";d.id="sh";
   const body=()=>{const sh=f.sub.share;return !auth?`<p class="mu" style="margin:0">Pour créer un lien, connecte-toi d’abord (onglet Compte).</p><a class="btn pri" href="#/c" data-o="close">Aller au compte</a>`
-  :sh?`<p class="mu" style="margin:0">Lien de lecture seule — ${sh.all?"toutes les fiches":"fiches en antisèche"}, copie du ${new Date(sh.at).toLocaleDateString("fr-FR")}. Les images ne sont pas incluses.</p>
+  :sh?`<p class="mu" style="margin:0">Lien de lecture seule — ${sh.all?"toutes les fiches":"fiches en antisèche"}, images comprises (${SHIMG} max). Il se met à jour tout seul après tes modifications (dernière mise à jour : ${new Date(sh.at).toLocaleString("fr-FR",{dateStyle:"short",timeStyle:"short"})}).</p>
 <input id="shL" readonly value="${esc(shareLink(sh.id))}" aria-label="Lien de partage">
-<div class="row"><button class="btn pri sp" data-o="copy">Copier / envoyer</button><button class="btn" data-o="upd">Mettre à jour</button></div>
+<div class="row"><button class="btn pri sp" data-o="copy">Copier / envoyer</button><button class="btn" data-o="upd">Mettre à jour maintenant</button></div>
 <button class="btn dg" data-o="stop">Arrêter le partage</button>`
-  :`<p class="mu" style="margin:0">Crée un lien que n’importe qui peut lire, sans compte. C’est une copie figée du sujet : tu peux la mettre à jour ou l’arrêter quand tu veux. Les images ne sont pas incluses.</p>
+  :`<p class="mu" style="margin:0">Crée un lien que n’importe qui peut lire, sans compte. Il suit tes modifications tout seul (quand tu es connecté), images comprises ; tu peux l’arrêter quand tu veux.</p>
 <label class="chk"><input type="radio" name="shA" value="0" checked><span>Fiches en antisèche (${nS})</span></label>
 <label class="chk"><input type="radio" name="shA" value="1"><span>Toutes les fiches (${nA})</span></label>
 <button class="btn pri" data-o="mk">Créer le lien</button>`};
@@ -409,7 +427,7 @@ function openShareSheet(sid){
     const o=b.dataset.o;
     if(o==="close"){closeSheet();return}
     try{
-      if(o==="mk"){const all=d.querySelector("input[name=shA]:checked").value==="1";if(!(all?nA:nS)){toast(all?"Ce sujet n’a aucune fiche.":"Aucune fiche en antisèche : touche l’étoile d’une fiche, ou choisis « Toutes les fiches ».",5000);return}b.disabled=true;await pushShare(f,all);draw()}
+      if(o==="mk"){const all=d.querySelector("input[name=shA]:checked").value==="1";if(!(all?nA:nS)){toast(all?"Ce sujet n’a aucune fiche.":"Aucune fiche en antisèche : touche l’étoile d’une fiche, ou choisis « Toutes les fiches ».",5000);return}b.disabled=true;b.textContent="Préparation (images)…";await pushShare(f,all);draw()}
       else if(o==="upd"){b.disabled=true;await pushShare(f,f.sub.share.all);toast("Lien mis à jour.");draw()}
       else if(o==="stop"){if(!confirm("Arrêter le partage ? Le lien ne fonctionnera plus."))return;await stopShare(f);draw()}
       else if(o==="copy"){const l=shareLink(f.sub.share.id);if(navigator.share)navigator.share({title:f.sub.name,url:l}).catch(()=>{});else if(navigator.clipboard)navigator.clipboard.writeText(l).then(()=>toast("Lien copié."));else{const i=$("#shL");i.focus();i.select()}}
@@ -424,8 +442,8 @@ async function sharePage(id){
   if(!d||!Array.isArray(d.items)){$("#app").innerHTML=`<div class="wrap"><h1 class="ser">Mémo Débat</h1><p class="mu" style="margin-top:12px">${esc(err||"Ce lien n’existe plus ou a été arrêté par son auteur.")}</p><a class="btn" href="#/" style="margin-top:12px">Ouvrir l’application</a></div>`;return}
   const ref=it=>{const s=it.src;return[s?s.title+(s.author?" — "+s.author:""):"",it.page?(s&&(s.kind==="Podcast"||s.kind==="Vidéo")?"à ":/^\d/.test(it.page)?"p. ":"")+it.page:""].filter(Boolean).join(" · ")};
   $("#app").innerHTML=`<div class="wrap"><div class="bar noprint"><span class="mu">Partagé en lecture seule</span><button class="btn gh" data-a="a4">${ic("print",18)}Imprimer / PDF</button></div>
-<h1 class="ser">${esc(d.name)}</h1><p class="mu" style="margin:4px 0 0">${esc(d.theme||"")} · ${d.items.length} fiche${d.items.length>1?"s":""} · copie du ${new Date(d.at).toLocaleDateString("fr-FR")}</p>
-<div class="stack">${d.items.map(it=>`<div class="card it"><div class="top">${badge(it.type)}</div><p class="txt" style="-webkit-line-clamp:unset;display:block">${esc(it.text||it.url)}</p>${media(it.url)}${it.cite&&it.cite!==it.text?`<p class="cite">« ${esc(it.cite)} »</p>`:""}${ref(it)?`<div class="src">${ic("book",16)}<span>${esc(ref(it))}</span></div>`:""}${it.verified?`<div class="src">Vérifié le ${esc(fmtDate(it.verified))}</div>`:""}${safeUrl(it.url)?`<div class="src"><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,50))}</a></div>`:""}${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<span class="chip sm">#${esc(t)}</span>`).join("")}</div>`:""}</div>`).join("")}</div>
+<h1 class="ser">${esc(d.name)}</h1><p class="mu" style="margin:4px 0 0">${esc(d.theme||"")} · ${d.items.length} fiche${d.items.length>1?"s":""} · mis à jour le ${new Date(d.at).toLocaleDateString("fr-FR")}</p>
+<div class="stack">${d.items.map(it=>`<div class="card it"><div class="top">${badge(it.type)}</div><p class="txt" style="-webkit-line-clamp:unset;display:block">${esc(it.text||it.url)}</p>${media(it.url,tsec(it.page))}${Array.isArray(it.imgs)?`<div class="gal">${it.imgs.filter(u=>/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(u)).map(u=>`<img src="${u}" alt="" loading="lazy">`).join("")}</div>`:""}${it.cite&&it.cite!==it.text?`<p class="cite">« ${esc(it.cite)} »</p>`:""}${ref(it)?`<div class="src">${ic("book",16)}<span>${esc(ref(it))}</span></div>`:""}${it.verified?`<div class="src">Vérifié le ${esc(fmtDate(it.verified))}</div>`:""}${safeUrl(it.url)?`<div class="src"><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--pr)">${esc(it.url.replace(/^https?:\/\//,"").slice(0,50))}</a></div>`:""}${it.tags&&it.tags.length?`<div class="chips">${it.tags.map(t=>`<span class="chip sm">#${esc(t)}</span>`).join("")}</div>`:""}</div>`).join("")}</div>
 <p class="mu noprint" style="margin-top:20px">Créé avec Mémo Débat.</p></div>`;
 }
 
@@ -690,7 +708,7 @@ function subPage(id){
 <div class="bar"><a href="#/h/${theme.id}" class="back">${ic("back")}${esc(theme.name)}</a><a href="#/a/${id}" class="btn hl" style="min-height:40px;border-radius:99px;font-size:14px">${ic("star",16)}Antisèche</a></div>
 <h1 class="ser">${esc(sub.name)}</h1>
 <p class="mu" style="margin:4px 0 0">${nItems(sub)} fiche${nItems(sub)>1?"s":""} · ${nStar(sub)} en antisèche <button class="btn gh" data-a="renSub" data-s="${id}" style="min-height:28px">Renommer</button><button class="btn gh dg" data-a="delSub" data-s="${id}" style="min-height:28px">Supprimer</button></p>
-<div class="chips" style="margin-top:10px"><button class="chip sm" data-a="shareSub" data-s="${id}">Partager le sujet</button><button class="chip sm" data-a="docSub" data-s="${id}">Exporter en Word</button></div>
+<div class="chips" style="margin-top:10px"><button class="chip sm" data-a="shareSub" data-s="${id}">Partager le sujet</button><button class="chip sm" data-a="docSub" data-s="${id}">Exporter en Word</button><a class="chip sm" href="#/k/${id}">Exporter en PDF</a></div>
 <div class="chips scroll" style="margin-top:12px"><button class="chip ${flt==="all"?"on":""}" data-a="flt" data-f="all">Tout</button><button class="chip ${flt==="star"?"on":""}" data-a="flt" data-f="star">En antisèche</button>${pairs.some(([i])=>needRev(i))?`<button class="chip ${flt==="rev"?"on":""}" data-a="flt" data-f="rev">À revérifier</button>`:""}${types.map(c=>`<button class="chip ${flt===c?"on":""}" data-a="flt" data-f="${c}">${typeOf(c)[1]}</button>`).join("")}</div>
 <div class="stack">${items.map(([i,h])=>itemCard(i,h,h!==id?"Aussi dans ce sujet":"")).join("")||'<p class="mu">Rien ici pour le moment. Touche + pour ajouter une fiche.</p>'}</div>
 </div>${fab(id)}${tabs("h")}`;
@@ -751,6 +769,16 @@ function histSheet(sid,iid){
     HK.forEach(k=>{if(k in h)L.it[k]=h[k]});L.it.hist=[cur,...L.it.hist.filter(x=>x!==h)].slice(0,10);L.it.u=now();save();closeSheet();fiche(sid,iid);toast("Version restaurée (l’ancienne est gardée dans l’historique).");
   };
   document.body.append(d);
+}
+// version imprimable d'un sujet (PDF via « Imprimer › Enregistrer en PDF »), filtre du sujet appliqué
+function printPage(id){
+  const f=findSub(id);if(!f)return go("#/");
+  const items=subItems(f.sub).map(x=>x[0]).filter(i=>flt==="all"||(flt==="star"?i.star:flt==="rev"?needRev(i):i.type===flt));
+  $("#app").innerHTML=`<div class="wrap"><div class="bar noprint"><a href="#/t/${id}" class="back">${ic("back")}${esc(f.sub.name)}</a><button class="btn pri" data-a="a4">${ic("print",18)}Enregistrer en PDF</button></div>
+<p class="mu noprint" style="margin:0">Touche « Enregistrer en PDF », puis choisis « Enregistrer au format PDF » comme imprimante.</p>
+<h1 class="ser">${esc(f.sub.name)}</h1><p class="mu" style="margin:4px 0 0">${esc(f.theme.name)} · ${items.length} fiche${items.length>1?"s":""} · ${new Date().toLocaleDateString("fr-FR")}</p>
+<div class="stack">${items.map(it=>{const sl=srcLabel(it);return`<div class="card it"><div class="top"><span>${badge(it.type)}${revBadge(it)}</span></div><p class="txt" style="-webkit-line-clamp:unset;display:block">${esc(it.text||it.url)}</p>${it.imgs&&it.imgs.length?`<div class="gal">${it.imgs.map(i=>`<img data-img="${i}" alt="">`).join("")}</div>`:""}${it.cite&&it.cite!==it.text?`<p class="cite">« ${esc(it.cite)} »</p>`:""}${sl?`<div class="src">${ic("book",16)}<span>${relDot(srcOf(it))}${esc(sl)}</span></div>`:""}${it.url?`<p class="mu" style="margin:0;word-break:break-all;font-size:13px">${esc(it.url)}</p>`:""}${it.verified?`<p class="mu" style="margin:0;font-size:13px">Vérifié le ${esc(fmtDate(it.verified))}</p>`:""}</div>`}).join("")||'<p class="mu">Aucune fiche.</p>'}</div></div>`;
+  hydrate();
 }
 function trashPage(){
   const T=db.trash||[];
@@ -955,7 +983,7 @@ ${typeof gemCard==="function"?gemCard():""}
 <a class="card row" href="#/x"><span class="sp"><b>Corbeille</b><br><span class="mu">Fiches supprimées, gardées 30 jours</span></span><span class="cnt">${(db.trash||[]).length}</span>${ic("chev",18)}</a>
 <div class="card"><b>Sauvegarde</b><p class="mu" style="margin:0">Un fichier de secours de toutes tes fiches.</p>
 <div class="row"><button class="btn sp" data-a="export">Exporter</button><button class="btn sp" data-a="import">Importer</button><input id="file" type="file" accept=".json" hidden></div></div>
-<p class="mu">Mémo Débat · mise à jour 11 (24/11)</p></div></div>${tabs("c")}`;
+<p class="mu">Mémo Débat · mise à jour 12 (24/11)</p></div></div>${tabs("c")}`;
   updSync();if(typeof gemBind==="function")gemBind();
   $("#revM").onchange=e=>{lsSet("memo_rev",e.target.value);toast("Délai enregistré : "+e.target.value+" mois.")};
   const lf=$("#lf");
@@ -1022,6 +1050,7 @@ function route(){
   else if(k==="a")p[1]?cheat(p[1]):debatePicker();
   else if(k==="c")accountPage();
   else if(k==="x")trashPage();
+  else if(k==="k"&&p[1])printPage(p[1]);
   else if(k==="p"&&p[1])sharePage(p[1]);
   else home();
 }
